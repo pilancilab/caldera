@@ -57,7 +57,13 @@ def quantize_nf(
     b: int = 16 
 ) -> torch.Tensor:
     """
-    Element-wise normal float quantization (as introduced by QLORA)
+    Element-wise normal float quantization (as introduced by QLORA): the
+    quantization levels, for X normalized to be in [-1, 1] are equally-spaced
+    quantiles of a N(0, 1) distribution.
+
+    This is information-theoretically optimal for normally-distributed data
+    but may perform worse than direct quantization for data that deviates
+    from a normal distribution.
 
     :param X (torch.Tensor): Matrix to be quantized
     :param B (int): Bit-budget per coordinate for quantization
@@ -71,6 +77,8 @@ def quantize_nf(
     X = torch.from_numpy(np.interp(X.to("cpu").numpy(), (X_min, X_max), (-1, 1))).to(
         X.device
     )
+
+    X = torch.minimum(torch.maximum(X, -1), 1)
 
     # We quantize the range [-1, 0) and the range [0, 1] separately, with
     # each having 2^{b-1} levels.
@@ -117,9 +125,12 @@ def quantize_small_sv_components(
     quantization_fn=quantize
 ) -> torch.Tensor:
     """
-    Keep the first r columns in original dtype and quantize the last (X.shape[1] - r) columns
-    The parameter `quantization_fn` allows you to specify regular quantization (via the
-    `quantize` function) or normal float quantization (via the `quantize_nf` function)
+    Keep the first r columns in original dtype and quantize the last
+    (X.shape[1] - r) columns.
+    
+    The parameter `quantization_fn` allows you to specify uniform quantization
+    (via the `quantize` function) or normal float quantization (via the
+    `quantize_nf` function).
     """
 
     assert r <= X.shape[1], "r should be less than X.shape[1]"

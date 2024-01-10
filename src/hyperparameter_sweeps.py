@@ -5,12 +5,63 @@ import sys
 from quantization import *
 from weight_compressors import *
 
-def set_beta_lplr(alpha, budget, n, d, kwarg_dict):
+def set_beta_lplr(
+    alpha: float = 0,
+    budget: int = 0,
+    n: int = 0,
+    d: int = 0,
+    kwarg_dict:dict = {
+        "B1": 4, "B2": 4
+    }
+):
+    """
+    Given an overall bit-budget and choice of alpha (the proportion of columns
+    of the low-rank factors that are kept in full precision), determine beta
+    (the proportion of singular values to keep). 
+
+    Corresponds to alternating_mixed_lplr.
+
+    - alpha (float): proportion of columns of the low-rank factors that are kept in
+        full precision (16B).
+    - budget (int): total number of bits allowed for L and R combined.
+    - n, d (ints): number of rows, columns in the matrix being approximated.
+    - kwarg_dict (dict): dictionary of keyword arguments for LPLR (see
+        alternating_mixed_lplr). Must include keys "B1" and "B2".
+
+    Output:
+    - float: maximum beta allowed to remain within the budget.
+    """
     B1 = kwarg_dict["B1"]
     B2 = kwarg_dict["B2"]
     return budget / (16*alpha*d*(n + d) + (1-alpha)*d*(B1*n + B2*d))
 
-def set_beta_lplr_plus_q(alpha, budget, n, d, kwarg_dict):
+def set_beta_lplr_plus_q(
+    alpha: float = 0,
+    budget: int = 0,
+    n: int = 0,
+    d: int = 0,
+    kwarg_dict: dict = {
+        "B1": 4, "B2": 4, "BQ": 2
+    }
+):
+    """
+    Given an overall bit-budget and choice of alpha (the proportion of columns
+    of the low-rank factors that are kept in full precision), determine beta
+    (the proportion of singular values to keep).
+
+    Corresponds to alternating_mixed_lplr_plus_q.
+
+    - alpha (float): proportion of columns of the low-rank factors that are kept in
+        full precision (16B).
+    - budget (int): total number of bits allowed for L and R combined.
+    - n, d (ints): number of rows, columns in the matrix being approximated.
+    - kwarg_dict (dict): dictionary of keyword arguments for LPLR+LoftQ (see
+        alternating_mixed_lplr_plus_q). Must include keys "B1", "B2", "BQ".
+
+    Output:
+    - float: maximum beta allowed to remain within the budget.
+    """
+
     B1 = kwarg_dict["B1"]
     B2 = kwarg_dict["B2"]
     BQ = kwarg_dict["BQ"]
@@ -18,21 +69,28 @@ def set_beta_lplr_plus_q(alpha, budget, n, d, kwarg_dict):
     return budget / (16*alpha*d*(n + d) + (1-alpha)*d*(B1*n + B2*d))
 
 def lplr_sweep_alpha(
-    X:torch.Tensor = None,
+    X: torch.Tensor = None,
     budget: int = 0,
-    kwarg_dict = {},
-    alpha_start:float = 0,
-    alpha_stop:float = 0.5,
-    alpha_step:float = 0.1,
-    lplr_type:int = LplrType.ALTERNATING_MIXED,
-    prune=False,
-    debug=False
+    kwarg_dict: dict = {},
+    alpha_start: float = 0,
+    alpha_stop: float = 0.5,
+    alpha_step: float = 0.1,
+    lplr_type: int = LplrType.ALTERNATING_MIXED,
+    prune: bool = False,
+    debug: bool = False
 ):
     """
     Perform a hyperparameter sweep on the LPLR parameter alpha, which is the
     ratio of the columns of L, R to keep in full precision. Beta, the fraction
     of singular values to keep, is set such that we meet the provided budget,
     in bits, of the mixed LPLR representation.
+
+    - X (torch.Tensor): matrix to approximate.
+    - budget (int): total number of bits allowed for L and R combined.
+    - kwarg_dict (dict): dictionary of keyword arguments for the specified LPLR
+        vairant. Must include all bit-precision parameters.
+    - alpha_start (float): first value of alpha to try.
+    - alpha_stop (float): last value of alpha 
     """
 
     lplr_fn = alternating_mixed_lplr
