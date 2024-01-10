@@ -5,13 +5,6 @@ import sys
 from quantization import *
 from weight_compressors import *
 
-from enum import Enum
-
-class LplrType(Enum):
-    ALTERNATING_MIXED = 0
-    DIRECT_SVD = 1
-    WITH_Q = 2
-
 def set_beta_lplr(alpha, budget, n, d, kwarg_dict):
     B1 = kwarg_dict["B1"]
     B2 = kwarg_dict["B2"]
@@ -27,7 +20,7 @@ def set_beta_lplr_plus_q(alpha, budget, n, d, kwarg_dict):
 def lplr_sweep_alpha(
     X:torch.Tensor = None,
     budget: int = 0,
-    kwarg_dict:dict = {},
+    kwarg_dict = {},
     alpha_start:float = 0,
     alpha_stop:float = 0.5,
     alpha_step:float = 0.1,
@@ -72,7 +65,7 @@ def lplr_sweep_alpha(
         if debug:
             print("-"*50)
             sys.stdout.flush()
-            logger.info(f"alpha={np.round(alpha, 8)}, beta={np.round(beta, 8)}")
+            logger.info(f"B1={kwargs['B1']}, B2={kwargs['B2']}, alpha={np.round(alpha, 8)}, beta={np.round(beta, 8)}")
         if k == 0:
             logger.warning(f"The bit budget of {budget} cannot be met for alpha={np.round(alpha, 8)}. Stopping early")
             break
@@ -94,13 +87,13 @@ def lplr_sweep_alpha(
     if debug:
         print("-"*50)
         sys.stdout.flush()
-        logger.info(f"The best frobenius norm error was for alpha={np.round(best_alpha, 8)}: {best_fro_err}")
+        logger.info(f"[B1={kwargs['B1']}, B2={kwargs['B2']}]The best frobenius norm error was for alpha={np.round(best_alpha, 8)}: {best_fro_err}")
     return best_mtxs, best_alpha, best_beta, best_fro_err
 
 def lplr_sweep_alpha_and_B(
     X:torch.Tensor = None,
     budget: int = 0,
-    kwarg_dict:dict = {},
+    kwarg_dict = {},
     alpha_start:float = 0,
     alpha_stop:float = 0.5,
     alpha_step:float = 0.1,
@@ -120,7 +113,7 @@ def lplr_sweep_alpha_and_B(
         kwargs["B1"] = B
         kwargs["B2"] = B
         mtxs, alpha, beta, fro_err = lplr_sweep_alpha(
-            X=X, budget=budget, kwarg_dict=kwarg_dict,
+            X=X, budget=budget, kwarg_dict=kwargs,
             alpha_start=alpha_start, alpha_stop=alpha_stop, alpha_step=alpha_step,
             lplr_type=lplr_type,
             prune=prune, debug=debug

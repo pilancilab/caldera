@@ -1,12 +1,19 @@
 import torch
-import numpy as np
-from scipy.sparse.linalg import cg
 from loguru import logger
 from tqdm import tqdm
 import math
 from quantization import *
 from lplr_utils import normalize_and_shift_wrt_inner_prod
+from enum import Enum
 
+class LplrType(Enum):
+    ALTERNATING_MIXED = 0
+    DIRECT_SVD = 1
+    WITH_Q = 2
+
+class AlgorithmType(Enum):
+    LPLR = 0
+    LOFTQ = 1
 
 def alternating_mixed_lplr(
     X: torch.Tensor = None,
@@ -18,6 +25,7 @@ def alternating_mixed_lplr(
     quantization_fn=quantize,
     normalize_and_shift=False,
     iters=10,
+    max_cond=5e6,
     log_errors=False
 ):
     """Obtain a low-precision low-rank approximation of X using alternating optimization of
@@ -32,6 +40,9 @@ def alternating_mixed_lplr(
     quantization_fn (function, optional): either `quantize` or `quantize_nf`; specifies the function used for quantization.
     normalize_and_shift (bool, optional): Maintain additional scalars for better approximation
     iters (int, optional): Number of iterations of alternating optimization
+    max_cond (float, optional): if the condition number of the rank-k
+        approximation of X is above this number, reduce k such that Xk is
+        well-conditioned. 
     sketch (Sketch, optional): Sketch type
     log_errors (bool, optional): Return fro-norm errors for each iteration
 
@@ -48,27 +59,31 @@ def alternating_mixed_lplr(
     # Compute full SVD
     U, S, VT = torch.linalg.svd(X.float(), full_matrices=False)
 
+    # If the rank-k approximation of X is ill-conditioned, then the least squares
+    # steps might be inaccurate or return NaNs. We can avoid this by resetting k
+    # if necessary.
+    if S[0] / S[k] >= max_cond:
+        k = torch.sum(S > S[0] / max_cond)
+        r1 = min(r1, k)
+        r2 = min(r2, k)
+        logger.warning(f"Could not find k non-negligible singular values of X, so setting k to {k}.")
+    
     U = U[:, 0:k]
     S = S[0:k]
-    print(S)
     VT = VT[0:k, :]
     S_sqrt = torch.diag(torch.tensor([math.sqrt(x) for x in S])).to(X.device)
 
     # Get the initial left low-rank factor
-    # logger.info(f"Getting initial condition for Alternating Mixed LPLR")
-
     L = quantize_small_sv_components(U @ S_sqrt, B1, r1, quantization_fn=quantization_fn)
     if torch.isnan(L).any().item():
         logger.error(f"NaNs encountered in quantizing first factor")
 
     # Get the initial right low-rank factor
-    L_pinv = torch.linalg.pinv(L.float()).type(X.dtype)
-    if torch.isnan(L_pinv).any().item():
-        logger.error(f"NaNs encountered in pinv")
+    # Get the right low-rank factor
+    W = torch.linalg.lstsq(L.float(), X.float())[0]
 
-    W = L_pinv @ X
     if torch.isnan(W).any().item():
-        logger.error(f"NaNs encountered in L_pinv @ X")
+        logger.error(f"NaNs encountered in finding unquantized R.")
 
     R = quantize_small_sv_components(W, B2, r2, quantization_fn=quantization_fn)
     if torch.isnan(R).any().item():
@@ -102,7 +117,7 @@ def alternating_mixed_lplr(
         R = quantize_small_sv_components(W, B2, r2, quantization_fn=quantization_fn)
         if torch.isnan(R).any().item():
             logger.error(f"NaNs encountered in Q(R). Giving up.")
-            break
+            break 
 
         errors.append(torch.norm(X - L @ R, p="fro").item())
         if errors[-1] < best_error:
