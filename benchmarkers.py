@@ -43,7 +43,7 @@ class LplrBenchmarker(WeightCompressionBenchmarker):
         kwargs["X"] = X
         kwargs["budget"] = budget
 
-        _, _, _, error = lplr_sweep_alpha(**kwargs)
+        _, _, _, _, error = lplr_sweep_alpha_and_B(**kwargs)
         self.errors.append(error)
 
 class FullQuantBenchmarker(WeightCompressionBenchmarker):
@@ -60,7 +60,7 @@ class FullQuantBenchmarker(WeightCompressionBenchmarker):
         assert b > 1, "For full quantization, we need at least two bits of precision."
 
         quant_fn = self.params["quantization_fn"] if "quantization_fn" in self.params else quantize
-        X_hat = quant_fn(X, b)
+        X_hat = normalize_and_shift_wrt_inner_prod(X, quant_fn(X, b))
         self.errors.append(torch.norm(X - X_hat, p="fro").item() / torch.norm(X, p="fro").item())
 
 class LoftqBenchmarker(WeightCompressionBenchmarker):
@@ -103,5 +103,5 @@ class DirectSvdBenchmarker(WeightCompressionBenchmarker):
         kwargs["budget"] = budget
         kwargs["run_alternating_optimization"] = False
 
-        _, _, _, error = lplr_sweep_alpha(**kwargs)
+        _, _, _, _, error = lplr_sweep_alpha_and_B(**kwargs)
         self.errors.append(error)

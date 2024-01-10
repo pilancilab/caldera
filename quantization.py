@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from scipy import stats
+Normal = torch.distributions.Normal(0, 1)
 
 def quantize(
     X: torch.Tensor = None,
@@ -31,6 +32,7 @@ def quantize(
 
     # Nearest neighbor quantization
     Q = torch.zeros_like(X)
+    
     Q[X < -1] = -1  # Value less than lower limit of dynamic range
     Q[X > 1] = 1  # Value more than upper limit of dynamic range
     mask0 = torch.abs(X) <= 1  # Value within dynamic range
@@ -91,15 +93,16 @@ def quantize_nf(
     
     # We index into q_neg and q_pos with these indices to get the quantized
     # values for the negative and positive parts of A, respectively.
-    neg_quant_idxs = (X < 0) * np.round((stats.norm.cdf(X * stats.norm.ppf(1-delta)) - delta) / res_neg).astype(int)
-    pos_quant_idxs = (X >= 0) * np.round((stats.norm.cdf(X * stats.norm.ppf(1-delta)) - 1/2) / res_pos).astype(int)
+    neg_quant_idxs = (X < 0) * torch.round((Normal.cdf(X * stats.norm.ppf(1-delta)) - delta) / res_neg).long()
+    pos_quant_idxs = (X >= 0) * torch.round((Normal.cdf(X * stats.norm.ppf(1-delta)) - 1/2) / res_pos).long()
 
-    Q = (X < 0) * q_neg[neg_quant_idxs] + (X >= 0) * q_pos[pos_quant_idxs]
+    X_numpy = X.cpu().numpy()
+    Q = (X_numpy < 0) * q_neg[neg_quant_idxs.cpu()] + (X_numpy >= 0) * q_pos[pos_quant_idxs.cpu()]
     
     # Re-normalize the quantized matrix back to its input scale
     Qr = torch.from_numpy(
         np.interp(
-            Q.to("cpu").numpy(),
+            Q,
             (Q.min().item(), Q.max().item()),
             (X_min, X_max),
         )
