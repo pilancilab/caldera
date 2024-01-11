@@ -4,11 +4,7 @@ from loguru import logger
 from quantization import *
 from weight_compressors import *
 from hyperparameter_sweeps import *
-
-import sys
-sys.path.insert(0,'../peft/src')
-from peft.utils.loftq_lplr_utils import loftq_lplr_init
-from peft.utils.loftq_utils import loftq_init
+from peft_additions import *
 
 class WeightCompressionBenchmarker:
     def __init__(
@@ -83,8 +79,13 @@ class LplrBenchmarker(WeightCompressionBenchmarker):
                 _, X_hat = direct_svd_mixed_lplr(**lplr_kwargs)
             else: ## Loftq-LPLR
                 lplr_kwargs["weight"] = X
-                _, X_hat = loftq_lplr_init(**lplr_kwargs)
+                Q, R, L = loftq_lplr_init(**lplr_kwargs)
+                X_hat = Q + L @ R
+                del Q, L ,R
+            
             error = torch.norm(X - X_hat, p="fro").item() / torch.norm(X, p="fro").item()
+            del X_hat
+        torch.cuda.empty_cache()
         self.errors.append(error)
 
 class FullQuantBenchmarker(WeightCompressionBenchmarker):
@@ -117,23 +118,34 @@ class LoftqBenchmarker(WeightCompressionBenchmarker):
     def __init__(
         self,
         algorithm_params:dict,
+        fixed_rank:bool = False,
         label = "LoftQ"
     ):
+        self.fixed_rank = fixed_rank
         super().__init__(algorithm_params, label)
 
     def run(self, X:torch.Tensor, budget:int):
-        kwargs = self.params.copy()
+        kwargs = self.algorithm_params.copy()
         n, d = X.size()
         b = kwargs["num_bits"] if "num_bits" in kwargs.keys() else 8
         if budget < b*n*d:
-            b = int(np.floor(budget / (n*d)))
+            b = 0
+            for b_option in [8, 4, 2]:
+                if b_option*n*d <= budget:
+                    b = b_option
+                    break
             logger.warning(f"Budget cannot be met with the given precision, reducing to {b}.")
 
         kwargs["num_bits"] = b
-        r = int(np.floor((budget - n*d*b) / (16*(n + d))))
-        kwargs["reduced_rank"] = r
+
+        if not self.fixed_rank:
+            r = int(np.floor((budget - n*d*b) / (16*(n + d))))
+            kwargs["reduced_rank"] = r
         kwargs["weight"] = X
 
         Q, R, L = loftq_init(**kwargs)
         X_hat = Q + L @ R
         self.errors.append(torch.norm(X - X_hat, p="fro").item() / torch.norm(X, p="fro").item())
+
+        del X_hat, Q, L, R
+        torch.cuda.empty_cache()

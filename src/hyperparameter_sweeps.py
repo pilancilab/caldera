@@ -4,10 +4,7 @@ from loguru import logger
 import sys
 from quantization import *
 from weight_compressors import *
-
-import sys
-sys.path.insert(0,'../peft/src')
-from peft.utils.loftq_lplr_utils import loftq_lplr_init
+from peft_additions import *
 
 def set_beta_lplr(
     alpha: float = 0,
