@@ -1,23 +1,91 @@
 import torch
 from loguru import logger
+import numpy as np
+from scipy.linalg import hadamard
 from tqdm import tqdm
 from quantization import QuantizerFactory, quantize_small_sv_components
 from lplr_utils import normalize_and_shift_wrt_inner_prod
-from enum import Enum
 from dataclasses import field, dataclass
-from src.peft.utils.loftq_utils import loftq_init
-from src.peft.utils.loftq_lplr_utils import loftq_lplr_init
+from enums import *
 
-class AlgorithmType(Enum):
-    ALTERNATING_MIXED_LPLR = 0
-    DIRECT_SVD_LPLR = 1
-    LOFTQ = 2
-    LOFTQ_LPLR = 3
 
 @dataclass
 class WeightCompressionConfig:
     algorithm_type: int = field(default=AlgorithmType.ALTERNATING_MIXED_LPLR)
     algorithm_kwargs: dict = field(default_factory=dict)
+    hadamard_sketch: dict = field(default=False)
+
+def rademacher_rv(*size):
+    rand = torch.rand(*size)
+    return 1 * (rand > 0.5) - 1 * (rand <= 0.5)
+
+# def get_hadamard_matrices()
+
+def hadamard_sketched_weight_compression(
+    X: torch.Tensor = None,
+    config: WeightCompressionConfig = WeightCompressionConfig()
+):
+    n, d = X.shape
+    H1_dim = int(2**np.ceil(np.log2(n)))
+    H2_dim = int(2**np.ceil(np.log2(d)))
+
+    H1_full = torch.from_numpy(hadamard(H1_dim)).to(X.device).float()
+    H1_full *= rademacher_rv(H1_dim).to(X.device) # multiplication by diagonal matrix
+    if n < H1_dim:
+        row_sel = torch.argsort(torch.rand(H1_dim))[:n]
+        H1 = H1_full[row_sel, :]
+        col_sel = torch.argsort(torch.rand(H1_dim))[:n]
+        H1 = H1[:, col_sel]
+        H1 *= np.sqrt(H1_dim) / np.sqrt(n)
+    else:
+        H1 = H1_full
+
+    H1 *= 1/np.sqrt(H1_dim)
+
+    print(d, H2_dim)
+    H2_full = torch.from_numpy(hadamard(H2_dim)).to(X.device).float()
+    H2_full *= rademacher_rv(H2_dim).to(X.device) # multiplication by diagonal matrix
+    if d < H2_dim:
+        row_sel = torch.argsort(torch.rand(H2_dim))[:d]
+        H2 = H2_full[row_sel, :]
+        col_sel = torch.argsort(torch.rand(H2_dim))[:d]
+        H2 = H2[:, col_sel]
+        H2 *= np.sqrt(H2_dim) / np.sqrt(d)
+    else:
+        H2 = H2_full
+
+    H2 *= 1/np.sqrt(H2_dim)
+
+    X2 = H1.T @ X @ H2.T
+
+    if config.algorithm_type == AlgorithmType.ALTERNATING_MIXED_LPLR:
+        result = alternating_mixed_lplr(X=X2, **config.algorithm_kwargs)
+        L, R = result[0]
+        result[0] = (H1 @ L, R @ H2)
+        result[1] = H1 @ result[1] @ H2
+    elif config.algorithm_type == AlgorithmType.DIRECT_SVD_LPLR:
+        result = direct_svd_mixed_lplr(X=X2, **config.algorithm_kwargs)
+        L, R = result[0]
+        result[0] = (H1 @ L, R @ H2)
+        result[1] = H1 @ result[1] @ H2
+    elif config.algorithm_type == AlgorithmType.LOFTQ:
+        from peft.utils.loftq_utils import loftq_init
+        result = loftq_init(weight=X2, **config.algorithm_kwargs)
+        result = list(result)
+        result[0] = H1 @ result[0] @ H2 # Q
+        result[1] = result[1] @ H2 # R
+        result[2] = H1 @ result[2] # L
+    elif config.algorithm_type == AlgorithmType.LOFTQ_LPLR:
+        from peft.utils.loftq_lplr_utils import loftq_lplr_init
+        result = loftq_lplr_init(weight=X2, **config.algorithm_kwargs)
+        result = list(result)
+        result[0] = H1 @ result[0] @ H2 # Q
+        result[1] = result[1] @ H2 # R
+        result[2] = H1 @ result[2] # L
+    else:
+        raise NotImplementedError("Other algorithm types not supported yet.")
+    
+    return tuple(result)
 
 def alternating_mixed_lplr(
     X: torch.Tensor = None,

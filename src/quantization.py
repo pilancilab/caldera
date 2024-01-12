@@ -92,7 +92,8 @@ class LowMemoryQuantizer(AbstractQuantizer):
         weight_reshape = weight.flatten().reshape(-1, self.block_size) # (L, M*N/B)
         weight_max = weight_reshape.abs().max(dim=-1)[0].unsqueeze(-1)
         if self.method == "uniform_clipped":
-            weight_max = weight_reshape.mean(dim=-1) + 2.5 * weight_reshape.std(dim=-1)
+            weight_max = weight_reshape.mean(dim=1) + 2.5 * weight_reshape.std(dim=1)
+            weight_max = weight_max.unsqueeze(-1)
             weight_reshape = torch.minimum(weight_reshape, weight_max)
             weight_reshape = torch.maximum(weight_reshape, -weight_max)
 
