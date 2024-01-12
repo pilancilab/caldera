@@ -4,7 +4,8 @@ from loguru import logger
 import sys
 from quantization import *
 from weight_compressors import *
-from peft_additions import *
+from peft.utils.loftq_utils import loftq_init
+from peft.utils.loftq_lplr_utils import loftq_lplr_init
 
 def set_beta_lplr(
     alpha: float = 0,
@@ -72,11 +73,10 @@ def set_beta_loftq_lplr(
 def lplr_sweep_alpha(
     X: torch.Tensor = None,
     budget: int = 0,
-    kwarg_dict: dict = {},
+    weight_comp_config: WeightCompressionConfig = WeightCompressionConfig(),
     alpha_start: float = 0,
     alpha_stop: float = 0.5,
     alpha_step: float = 0.1,
-    lplr_type: int = AlgorithmType.ALTERNATING_MIXED_LPLR,
     prune: bool = False,
     debug: bool = False
 ):
@@ -100,6 +100,9 @@ def lplr_sweep_alpha(
     - debug (bool): if set True (default is False), debug logs are printed.
     """
     n, d = X.size()
+
+    kwarg_dict = weight_comp_config.algorithm_kwargs
+    lplr_type = weight_comp_config.algorithm_type
 
     best_fro_err = float('inf')
     best_alpha = None
@@ -125,7 +128,7 @@ def lplr_sweep_alpha(
             kwargs["r2"] = r
             kwargs["X"] = X
         else: # LOFTQ-LPLR
-            kwargs["num_full_rank_factors"] = r
+            kwargs["num_full_precision_factors"] = r
             kwargs["reduced_rank"] = k
             kwargs["weight"] = X
 
@@ -172,12 +175,11 @@ def lplr_sweep_alpha(
 def lplr_sweep_alpha_and_B(
     X:torch.Tensor = None,
     budget: int = 0,
-    kwarg_dict = {},
+    weight_comp_config: WeightCompressionConfig = WeightCompressionConfig(),
     alpha_start:float = 0,
     alpha_stop:float = 0.5,
     alpha_step:float = 0.1,
     B_options:list[int] = [4, 8],
-    lplr_type:int = AlgorithmType.ALTERNATING_MIXED_LPLR,
     prune=False,
     debug=False
 ):
@@ -208,19 +210,23 @@ def lplr_sweep_alpha_and_B(
     best_alpha = None
     best_beta = None
     best_B = None
+
+    weight_comp_config = WeightCompressionConfig(
+        algorithm_type=weight_comp_config.algorithm_type,
+        algorithm_kwargs=weight_comp_config.algorithm_kwargs.copy()
+    )
     for B in B_options:
-        kwargs = kwarg_dict.copy()
-        if lplr_type != AlgorithmType.LOFTQ_LPLR:
-            kwargs["B1"] = B
-            kwargs["B2"] = B
+        if weight_comp_config.algorithm_type != AlgorithmType.LOFTQ_LPLR:
+        
+            weight_comp_config.algorithm_kwargs["B1"] = B
+            weight_comp_config.algorithm_kwargs["B2"] = B
         else:
-            kwargs["num_bits_factors"] = B
+            weight_comp_config.algorithm_kwargs["num_bits_factors"] = B
 
         mtxs, alpha, beta, fro_err = lplr_sweep_alpha(
-            X=X, budget=budget, kwarg_dict=kwargs,
+            X=X, budget=budget, weight_comp_config=weight_comp_config,
             alpha_start=alpha_start, alpha_stop=alpha_stop,
             alpha_step=alpha_step,
-            lplr_type=lplr_type,
             prune=prune, debug=debug
         )
 

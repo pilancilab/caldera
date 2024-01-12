@@ -4,15 +4,16 @@ from loguru import logger
 from quantization import *
 from weight_compressors import *
 from hyperparameter_sweeps import *
-from peft_additions import *
+from peft.utils.loftq_utils import loftq_init
+from peft.utils.loftq_lplr_utils import loftq_lplr_init
 
 class WeightCompressionBenchmarker:
     def __init__(
         self,
-        algorithm_params:dict,
+        weight_comp_config:WeightCompressionConfig,
         label = "Weight Compressor"
     ):
-        self.algorithm_params = algorithm_params
+        self.weight_comp_config = weight_comp_config
         self._errors = []
         self._label = label
 
@@ -34,47 +35,49 @@ class WeightCompressionBenchmarker:
 class LplrBenchmarker(WeightCompressionBenchmarker):
     def __init__(
         self,
-        lplr_type: int = AlgorithmType.ALTERNATING_MIXED_LPLR,
-        algorithm_params:dict = {},
+        weight_comp_config:WeightCompressionConfig = WeightCompressionConfig(),
         run_hyper_parameter_sweep:bool = True,
         hyperparameter_sweep_params:dict = {},
         label = None
     ):
         if label is None:
             label = "Mixed Alternating LPLR"
-            if lplr_type == AlgorithmType.DIRECT_SVD_LPLR:
+            if weight_comp_config.algorithm_type == AlgorithmType.DIRECT_SVD_LPLR:
                 label = "Direct SVD LPLR"
-            if lplr_type == AlgorithmType.LOFTQ_LPLR:
+            if weight_comp_config.algorithm_type == AlgorithmType.LOFTQ_LPLR:
                 label = "LoftQ-LPLR"
 
-        self.lplr_type = lplr_type
         self.run_hyper_parameter_sweep = run_hyper_parameter_sweep
         self.hyperparameter_sweep_params = hyperparameter_sweep_params
 
-        super().__init__(algorithm_params, label)
+        super().__init__(weight_comp_config, label)
         
     def run(self, X:torch.Tensor, budget:int):
-        lplr_kwargs = self.algorithm_params.copy()
+        lplr_kwargs = self.weight_comp_config.algorithm_kwargs.copy()
 
         # extra logic required w.r.t. the precision of the full quantized part
-        if self.lplr_type == AlgorithmType.LOFTQ_LPLR:
+        if self.weight_comp_config.algorithm_type == AlgorithmType.LOFTQ_LPLR:
             if "num_bits" not in lplr_kwargs.keys():
                 lplr_kwargs["num_bits"] = 4
             if budget < lplr_kwargs["num_bits"]*X.shape[0]*X.shape[1]:
                 lplr_kwargs["num_bits"] = int(np.floor(budget / (X.shape[0]*X.shape[1])))
                 logger.warning(f"Budget cannot be met with the given precision, reducing to {lplr_kwargs['num_bits']}.")
 
+
         if self.run_hyper_parameter_sweep:
             _, _, _, _, error = lplr_sweep_alpha_and_B(
-                X=X, budget=budget, kwarg_dict=lplr_kwargs,
-                lplr_type=self.lplr_type,
+                X=X, budget=budget,
+                weight_comp_config=WeightCompressionConfig(
+                    algorithm_type=self.weight_comp_config.algorithm_type,
+                    algorithm_kwargs=lplr_kwargs
+                ),
                 **self.hyperparameter_sweep_params
             )
         else:
-            if self.lplr_type == AlgorithmType.ALTERNATING_MIXED_LPLR:
+            if self.weight_comp_config.algorithm_type == AlgorithmType.ALTERNATING_MIXED_LPLR:
                 lplr_kwargs["X"] = X
                 _, X_hat = alternating_mixed_lplr(**lplr_kwargs)
-            elif self.lplr_type == AlgorithmType.DIRECT_SVD_LPLR:
+            elif self.weight_comp_config.algorithm_type == AlgorithmType.DIRECT_SVD_LPLR:
                 lplr_kwargs["X"] = X
                 _, X_hat = direct_svd_mixed_lplr(**lplr_kwargs)
             else: ## Loftq-LPLR
@@ -91,11 +94,11 @@ class LplrBenchmarker(WeightCompressionBenchmarker):
 class FullQuantBenchmarker(WeightCompressionBenchmarker):
     def __init__(
         self,
-        quant_type = QuantType.UNIFORM,
+        quantizer_factory:QuantizerFactory = QuantizerFactory(),
         label = "Full Quantization"
     ):
-        self.quant_type = quant_type
-        super().__init__({}, label)
+        self.quantizer_factory = quantizer_factory
+        super().__init__(WeightCompressionConfig(), label)
 
     def run(self, X:torch.Tensor, budget:int):
         n, d = X.size()
@@ -108,24 +111,23 @@ class FullQuantBenchmarker(WeightCompressionBenchmarker):
         
         assert b > 1, "For full quantization, we need at least two bits of precision."
 
-        quantizer = get_quantizer(
-            B=b, quant_type=self.quant_type, device=X.device
-        )
+        quantizer = self.quantizer_factory.get_quantizer(b, device=X.device)
         X_hat = quantizer.dequantize_block(*quantizer.quantize_block(X))
         self.errors.append(torch.norm(X - X_hat, p="fro").item() / torch.norm(X, p="fro").item())
 
 class LoftqBenchmarker(WeightCompressionBenchmarker):
     def __init__(
         self,
-        algorithm_params:dict,
+        weight_comp_config:WeightCompressionConfig = \
+            WeightCompressionConfig(algorithm_type=AlgorithmType.LOFTQ),
         fixed_rank:bool = False,
         label = "LoftQ"
     ):
         self.fixed_rank = fixed_rank
-        super().__init__(algorithm_params, label)
+        super().__init__(weight_comp_config, label)
 
     def run(self, X:torch.Tensor, budget:int):
-        kwargs = self.algorithm_params.copy()
+        kwargs = self.weight_comp_config.algorithm_kwargs.copy()
         n, d = X.size()
         b = kwargs["num_bits"] if "num_bits" in kwargs.keys() else 8
         if budget < b*n*d:

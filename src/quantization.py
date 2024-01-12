@@ -1,20 +1,18 @@
+
 import torch
-import numpy as np
 from scipy import stats
-from enum import Enum
+from abc import ABC, abstractmethod
 
-import sys
-sys.path.insert(0,'../peft/src')
-from peft.utils.loftq_utils import NFQuantizer
+class AbstractQuantizer(ABC):
+    @abstractmethod
+    def quantize_block(self, weight):
+        ...
+    
+    @abstractmethod
+    def dequantize_block(self, weight_quant, weight_max, weight_shape):
+        ...
 
-class QuantType(Enum):
-    UNIFORM = 0
-    NF = 1
-    OUR_UNIFORM = 2
-    OUR_UNIFORM_CLIPPED = 3
-    OUR_NF = 4
-
-class OurQuantizer:
+class LowMemoryQuantizer(AbstractQuantizer):
     def __init__(self, num_bits=2, method="normal", block_size=64):
         self.num_bits = num_bits
         self.method = method
@@ -52,7 +50,7 @@ class OurQuantizer:
         neg_quantiles = (weight_divabs < 0) * \
             ((Normal.cdf(weight_divabs * stats.norm.ppf(1-delta)) - delta) / res_neg)
         neg_quantiles_round_down = neg_quantiles.floor().long()
-        neg_quantiles_round_up = neg_quantiles.ceil().long()
+        neg_quantiles_round_up = torch.minimum(neg_quantiles.ceil().long(), torch.tensor(M-1))
         mask = (torch.abs(weight_divabs - q_neg[neg_quantiles_round_down]) <= torch.abs(weight_divabs - q_neg[neg_quantiles_round_up]))
         neg_quant_idxs = neg_quantiles_round_down * mask + neg_quantiles_round_up * (~mask)
 
@@ -80,7 +78,6 @@ class OurQuantizer:
         q_neg = Normal.icdf(res_neg * torch.arange(M - 1).to(weight_quant.device) + delta) / stats.norm.ppf(1-delta)
         q_pos = Normal.icdf(res_pos * torch.arange(M + 1).to(weight_quant.device) + 1/2) / stats.norm.ppf(1-delta)
         q_levels = torch.cat((q_neg, q_pos))
-        print(q_levels)
         return q_levels[weight_quant.long()]
         
     def quantize_block(self, weight):
@@ -114,45 +111,18 @@ class OurQuantizer:
         
         return (weight * weight_max).reshape(weight_shape)
 
+class QuantizerFactory:
+    def __init__(self, method="uniform", block_size=64):
+        self.method = method
+        self.block_size = block_size
 
-def get_quantizer(
-    B: int = 8,
-    quant_type: int = QuantType.UNIFORM,
-    device:str = "cpu"
-):
-    if quant_type == QuantType.UNIFORM:
-        return NFQuantizer(
-            num_bits = B,
-            device=device,
-            method="uniform"
-        )
-    if quant_type == QuantType.NF:
-        return NFQuantizer(
-            num_bits = B,
-            device=device,
-            method="normal"
-        )
-    if quant_type == QuantType.OUR_UNIFORM:
-        return OurQuantizer(
-            num_bits = B,
-            method = "uniform"
-        )
-    
-    if quant_type == QuantType.OUR_UNIFORM_CLIPPED:
-        return OurQuantizer(
-            num_bits=B,
-            method="uniform_clipped"
-        )
-    return OurQuantizer(
-        num_bits = B,
-        method = "normal"
-    )
-    
+    def get_quantizer(self, num_bits, device="cpu"):
+        return LowMemoryQuantizer(num_bits=num_bits, method=self.method, block_size=self.block_size)
     
 def quantize_small_sv_components(
     X: torch.Tensor = None,
     r: int = 0,
-    quantizer: NFQuantizer = None
+    quantizer:AbstractQuantizer = None
 ) -> torch.Tensor:
     """
     Keep the first r columns in original dtype and quantize the last

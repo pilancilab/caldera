@@ -1,15 +1,23 @@
 import torch
 from loguru import logger
 from tqdm import tqdm
-from quantization import *
+from quantization import QuantizerFactory, quantize_small_sv_components
 from lplr_utils import normalize_and_shift_wrt_inner_prod
 from enum import Enum
+from dataclasses import field, dataclass
+from src.peft.utils.loftq_utils import loftq_init
+from src.peft.utils.loftq_lplr_utils import loftq_lplr_init
 
 class AlgorithmType(Enum):
     ALTERNATING_MIXED_LPLR = 0
     DIRECT_SVD_LPLR = 1
     LOFTQ = 2
     LOFTQ_LPLR = 3
+
+@dataclass
+class WeightCompressionConfig:
+    algorithm_type: int = field(default=AlgorithmType.ALTERNATING_MIXED_LPLR)
+    algorithm_kwargs: dict = field(default_factory=dict)
 
 def alternating_mixed_lplr(
     X: torch.Tensor = None,
@@ -18,7 +26,7 @@ def alternating_mixed_lplr(
     r2: int = None,
     B1: int = 8,
     B2: int = 8,
-    quant_type: int = QuantType.UNIFORM,
+    quantizer_factory: QuantizerFactory = QuantizerFactory(),
     normalize_and_shift=False,
     iters=10,
     max_cond=5e6,
@@ -62,12 +70,8 @@ def alternating_mixed_lplr(
         k >= r1 and k >= r2
     ), "No. of singular vectors to be in full precision (r) should be less than or equal to target rank (k)"
 
-    quantizer_B1 = get_quantizer(
-        B=B1, quant_type=quant_type, device=X.device
-    )
-    quantizer_B2 = get_quantizer(
-        B=B2, quant_type=quant_type, device=X.device
-    )
+    quantizer_B1 = quantizer_factory.get_quantizer(B1, device=X.device)
+    quantizer_B2 = quantizer_factory.get_quantizer(B2, device=X.device)
 
     # Compute full SVD
     U, S, VT = torch.linalg.svd(X.float(), full_matrices=False)
@@ -160,7 +164,7 @@ def direct_svd_mixed_lplr(
     r2: int = None,
     B1: int = 8,
     B2: int = 8,
-    quant_type: int = QuantType.UNIFORM,
+    quantizer_factory: QuantizerFactory = QuantizerFactory(),
     normalize_and_shift=False
 ):
     """
@@ -195,12 +199,8 @@ def direct_svd_mixed_lplr(
         k >= r1 and k >= r2
     ), "No. of singular vectors to be in full precision (r) should be less than or equal to target rank (k)"
 
-    quantizer_B1 = get_quantizer(
-        B=B1, quant_type=quant_type, device=X.device
-    )
-    quantizer_B2 = get_quantizer(
-        B=B2, quant_type=quant_type, device=X.device
-    )
+    quantizer_B1 = quantizer_factory.get_quantizer(B1, device=X.device)
+    quantizer_B2 = quantizer_factory.get_quantizer(B2, device=X.device)
 
     # Compute full SVD
     U, S, VT = torch.linalg.svd(X.float(), full_matrices=False)
