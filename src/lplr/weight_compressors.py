@@ -3,10 +3,10 @@ from loguru import logger
 import numpy as np
 from scipy.linalg import hadamard
 from tqdm import tqdm
-from quantization import QuantizerFactory, quantize_small_sv_components
-from lplr_utils import normalize_and_shift_wrt_inner_prod
+from lplr.quantization import QuantizerFactory, quantize_small_sv_components
+from lplr.lplr_utils import normalize_and_shift_wrt_inner_prod
 from dataclasses import field, dataclass
-from enums import *
+from lplr.enums import *
 
 
 @dataclass

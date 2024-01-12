@@ -1,9 +1,9 @@
 import torch
 import numpy as np
 from loguru import logger
-from quantization import *
-from weight_compressors import *
-from hyperparameter_sweeps import *
+from lplr.quantization import *
+from lplr.weight_compressors import *
+from lplr.hyperparameter_sweeps import *
 from peft.utils.loftq_utils import loftq_init
 from peft.utils.loftq_lplr_utils import loftq_lplr_init
 

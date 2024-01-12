@@ -1,0 +1,12 @@
+setup.py
+src/lplr/__init__.py
+src/lplr/benchmarkers.py
+src/lplr/enums.py
+src/lplr/hyperparameter_sweeps.py
+src/lplr/lplr_utils.py
+src/lplr/quantization.py
+src/lplr/weight_compressors.py
+src/lplr.egg-info/PKG-INFO
+src/lplr.egg-info/SOURCES.txt
+src/lplr.egg-info/dependency_links.txt
+src/lplr.egg-info/top_level.txt
