@@ -11,7 +11,8 @@ class QuantType(Enum):
     UNIFORM = 0
     NF = 1
     OUR_UNIFORM = 2
-    OUR_NF = 3
+    OUR_UNIFORM_CLIPPED = 3
+    OUR_NF = 4
 
 class OurQuantizer:
     def __init__(self, num_bits=2, method="normal", block_size=64):
@@ -19,7 +20,7 @@ class OurQuantizer:
         self.method = method
         self.block_size = block_size
 
-        if self.method != "normal" and self.method != "uniform":
+        if self.method != "normal" and self.method != "uniform" and self.method != "uniform_clipped":
             raise NotImplementedError("Other quantization methods not supported yet.")
 
     def _quantize_uniform(self, weight_divabs):
@@ -45,29 +46,42 @@ class OurQuantizer:
         
         # We index into q_neg and q_pos with these indices to get the quantized
         # values for the negative and positive parts of A, respectively.
+        q_neg = Normal.icdf(res_neg * torch.arange(M).to(weight_divabs.device) + delta) / stats.norm.ppf(1-delta)
+        q_pos = Normal.icdf(res_pos * torch.arange(M + 1).to(weight_divabs.device) + 1/2) / stats.norm.ppf(1-delta)
 
-        neg_quant_idxs = (weight_divabs < 0) * \
-            ((Normal.cdf(weight_divabs * stats.norm.ppf(1-delta)) - delta) / res_neg).round()
-        pos_quant_idxs = (weight_divabs >= 0) * \
-            ((Normal.cdf(weight_divabs * stats.norm.ppf(1-delta)) - 1/2) / res_pos).round()
-        idxs = neg_quant_idxs + (weight_divabs >= 0) * (pos_quant_idxs + M)
+        neg_quantiles = (weight_divabs < 0) * \
+            ((Normal.cdf(weight_divabs * stats.norm.ppf(1-delta)) - delta) / res_neg)
+        neg_quantiles_round_down = neg_quantiles.floor().long()
+        neg_quantiles_round_up = neg_quantiles.ceil().long()
+        mask = (torch.abs(weight_divabs - q_neg[neg_quantiles_round_down]) <= torch.abs(weight_divabs - q_neg[neg_quantiles_round_up]))
+        neg_quant_idxs = neg_quantiles_round_down * mask + neg_quantiles_round_up * (~mask)
+
+        pos_quantiles = (weight_divabs >= 0) * \
+            ((Normal.cdf(weight_divabs * stats.norm.ppf(1-delta)) - 1/2) / res_pos)
+        pos_quantiles_round_down = pos_quantiles.floor().long()
+        pos_quantiles_round_up = torch.minimum(pos_quantiles.ceil().long(), torch.tensor(M))
+        mask = (torch.abs(weight_divabs - q_pos[pos_quantiles_round_down]) <= torch.abs(weight_divabs - q_pos[pos_quantiles_round_up]))
+        pos_quant_idxs = pos_quantiles_round_down * mask + pos_quantiles_round_up * (~mask)
+
+        idxs = neg_quant_idxs + (weight_divabs >= 0) * (pos_quant_idxs + M - 1)
         return idxs.to(torch.uint8)
 
     def _dequantize_uniform(self, weight_quant):
         return weight_quant.float() / (2**(self.num_bits - 1) - 1)
     
     def _dequantize_nf(self, weight_quant):
+        Normal = torch.distributions.Normal(0, 1)
         M = 2**(self.num_bits-1)
         delta = 1/2 * (1/30 + 1/32) # as described above
         res_neg = (1/2 - delta) / (M - 1) # resolution for [delta, 1/2]
         res_pos = (1/2 - delta) / M # resolution for [1/2, 1-delta]
-        scale_factor = 1 / stats.norm.ppf(1-delta) # scales the quantization
                                                 # levels to be in [-1, 1]
         # quantization levels for the negative and positive halves, respectively
-        q_neg = stats.norm.ppf(res_neg * np.arange(M) + delta) * scale_factor
-        q_pos = stats.norm.ppf(res_pos * np.arange(M + 1) + 1/2) * scale_factor
-        q_levels = np.hstack((q_neg, q_pos))
-        return torch.from_numpy(q_levels[weight_quant.long().cpu()]).to(weight_quant.device)
+        q_neg = Normal.icdf(res_neg * torch.arange(M - 1).to(weight_quant.device) + delta) / stats.norm.ppf(1-delta)
+        q_pos = Normal.icdf(res_pos * torch.arange(M + 1).to(weight_quant.device) + 1/2) / stats.norm.ppf(1-delta)
+        q_levels = torch.cat((q_neg, q_pos))
+        print(q_levels)
+        return q_levels[weight_quant.long()]
         
     def quantize_block(self, weight):
         if len(weight.shape) != 2:
@@ -80,18 +94,23 @@ class OurQuantizer:
         
         weight_reshape = weight.flatten().reshape(-1, self.block_size) # (L, M*N/B)
         weight_max = weight_reshape.abs().max(dim=-1)[0].unsqueeze(-1)
+        if self.method == "uniform_clipped":
+            weight_max = weight_reshape.mean(dim=-1) + 2.5 * weight_reshape.std(dim=-1)
+            weight_reshape = torch.minimum(weight_reshape, weight_max)
+            weight_reshape = torch.maximum(weight_reshape, -weight_max)
+
         weight_divabs = weight_reshape / weight_max
-        if self.method == "uniform":
-            weight_quant = self._quantize_uniform(weight_divabs)
-        else:
+        if self.method == "normal":
             weight_quant = self._quantize_nf(weight_divabs)
+        else:
+            weight_quant = self._quantize_uniform(weight_divabs)
         return weight_quant, weight_max, weight.shape
     
     def dequantize_block(self, weight_quant, weight_max, weight_shape):
-        if self.method == "uniform":
-            weight = self._dequantize_uniform(weight_quant)
-        else:
+        if self.method == "normal":
             weight = self._dequantize_nf(weight_quant)
+        else:
+            weight = self._dequantize_uniform(weight_quant)
         
         return (weight * weight_max).reshape(weight_shape)
 
@@ -117,6 +136,12 @@ def get_quantizer(
         return OurQuantizer(
             num_bits = B,
             method = "uniform"
+        )
+    
+    if quant_type == QuantType.OUR_UNIFORM_CLIPPED:
+        return OurQuantizer(
+            num_bits=B,
+            method="uniform_clipped"
         )
     return OurQuantizer(
         num_bits = B,
