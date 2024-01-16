@@ -120,6 +120,9 @@ class QuantizerFactory:
     def get_quantizer(self, num_bits, device="cpu"):
         return LowMemoryQuantizer(num_bits=num_bits, method=self.method, block_size=self.block_size)
     
+    def __str__(self):
+        return f"QuantizerFactory(method={self.method}, block_size={self.block_size})"
+    
 def quantize_small_sv_components(
     X: torch.Tensor = None,
     r: int = 0,
