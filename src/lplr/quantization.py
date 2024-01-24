@@ -2,6 +2,7 @@
 import torch
 from scipy import stats
 from abc import ABC, abstractmethod
+import numpy as np
 
 class AbstractQuantizer(ABC):
     @abstractmethod
@@ -80,7 +81,7 @@ class LowMemoryQuantizer(AbstractQuantizer):
         q_levels = torch.cat((q_neg, q_pos))
         return q_levels[weight_quant.long()]
         
-    def quantize_block(self, weight):
+    def quantize_block(self, weight, epsilon=1e-8):
         if len(weight.shape) != 2:
             raise ValueError(f"Only support 2D matrix, but your input has {len(weight.shape)} dimensions.")
         if weight.shape[0] * weight.shape[1] % self.block_size != 0:
@@ -96,7 +97,7 @@ class LowMemoryQuantizer(AbstractQuantizer):
             weight_max = weight_max.unsqueeze(-1)
             weight_reshape = torch.minimum(weight_reshape, weight_max)
             weight_reshape = torch.maximum(weight_reshape, -weight_max)
-
+        weight_max = torch.maximum(weight_max, torch.Tensor([epsilon]).to(weight.device))
         weight_divabs = weight_reshape / weight_max
         if self.method == "normal":
             weight_quant = self._quantize_nf(weight_divabs)
@@ -122,7 +123,23 @@ class QuantizerFactory:
     
     def __str__(self):
         return f"QuantizerFactory(method={self.method}, block_size={self.block_size})"
+
+def mixed_precision_quantize(
+    X: torch.Tensor = None,
+    widths: list[int] = 0,
+    quantizers: list[AbstractQuantizer] = None
+) -> torch.Tensor:
+    assert sum(widths) <= X.shape[1], "sum(widths) should be less than X.shape[1]"
     
+    idxs = np.hstack(([0], np.cumsum(widths)))
+    # Perform simulated quantization by quantizing and the dequantizing
+    quantized_components = [quantizers[i].dequantize_block(
+        *quantizers[i].quantize_block(X[:, idxs[i]:idxs[i+1]])
+        ) if quantizers[i].num_bits < 16 else X[:, idxs[i]:idxs[i+1]] \
+            for i in range(len(widths))
+    ]
+    return torch.cat(quantized_components, dim=1)  
+  
 def quantize_small_sv_components(
     X: torch.Tensor = None,
     r: int = 0,

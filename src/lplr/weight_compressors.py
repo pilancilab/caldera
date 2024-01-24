@@ -178,7 +178,7 @@ def alternating_mixed_lplr(
     - [only if log_errors] list[float]: fro-norm errors for each iteration.
     """
     
-    logger.info(f"LPLR: k={k}, r={r1}, B={B1}, quantizer_factory={quantizer_factory}, iters={iters}")
+    # logger.info(f"LPLR: k={k}, r={r1}, B={B1}, quantizer_factory={quantizer_factory}, iters={iters}")
 
     assert (
         X.shape[0] >= X.shape[1]
