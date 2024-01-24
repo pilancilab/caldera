@@ -2,8 +2,8 @@ import torch
 import numpy as np
 from loguru import logger
 import sys
-from lplr.quantization import *
-from lplr.weight_compressors import *
+from lplr_llm.quantization import *
+from lplr_llm.weight_compressors import *
 from peft.utils.loftq_utils import loftq_init
 from peft.utils.loftq_lplr_utils import loftq_lplr_init
 

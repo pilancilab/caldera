@@ -1,8 +1,8 @@
 import torch
 from loguru import logger
-from lplr.quantization import QuantizerFactory, quantize_small_sv_components, mixed_precision_quantize
+from lplr_llm.quantization import QuantizerFactory, quantize_small_sv_components, mixed_precision_quantize
 from tqdm import tqdm
-from lplr.weight_compressors import alternating_mixed_lplr
+from lplr_llm.weight_compressors import alternating_mixed_lplr
 
 def make_sparse(A, sparsity):
     A_flat = torch.abs(A.flatten())
