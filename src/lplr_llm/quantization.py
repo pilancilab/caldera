@@ -4,6 +4,7 @@ from scipy import stats
 from abc import ABC, abstractmethod
 import numpy as np
 
+
 class AbstractQuantizer(ABC):
     @abstractmethod
     def quantize_block(self, weight):
@@ -16,6 +17,7 @@ class AbstractQuantizer(ABC):
 class LowMemoryQuantizer(AbstractQuantizer):
     def __init__(self, num_bits=2, method="normal", block_size=64):
         self.num_bits = num_bits
+        assert num_bits in [2, 4, 8, 16]
         self.method = method
         self.block_size = block_size
 
@@ -25,7 +27,11 @@ class LowMemoryQuantizer(AbstractQuantizer):
     def _quantize_uniform(self, weight_divabs):
         # weight_divabs is between -1 and 1, inclusive
         weight_scaled = weight_divabs * (2**(self.num_bits - 1) - 1)
-        return weight_scaled.round().to(torch.int8)
+        weight_scaled =  weight_scaled.round()
+        if self.num_bits <= 8:
+            return weight_scaled.to(torch.int8)
+        else:
+            return weight_scaled.to(torch.int16)
 
     def _quantize_nf(self, weight_divabs):
         Normal = torch.distributions.Normal(0, 1)
@@ -63,7 +69,11 @@ class LowMemoryQuantizer(AbstractQuantizer):
         pos_quant_idxs = pos_quantiles_round_down * mask + pos_quantiles_round_up * (~mask)
 
         idxs = neg_quant_idxs + (weight_divabs >= 0) * (pos_quant_idxs + M - 1)
-        return idxs.to(torch.uint8)
+
+        if self.num_bits <= 8:
+            return idxs.to(torch.uint8)
+        else:
+            return idxs
 
     def _dequantize_uniform(self, weight_quant):
         return weight_quant.float() / (2**(self.num_bits - 1) - 1)
@@ -112,6 +122,16 @@ class LowMemoryQuantizer(AbstractQuantizer):
             weight = self._dequantize_uniform(weight_quant)
         
         return (weight * weight_max).reshape(weight_shape)
+    
+def simulated_quant(
+    quant: AbstractQuantizer,
+    X: torch.Tensor
+):
+    if quant.num_bits >= 16:
+        if X.dtype == torch.float32:
+            return X.to(dtype=torch.bfloat16).float()
+        return X
+    return quant.dequantize_block(*quant.quantize_block(X))
 
 class QuantizerFactory:
     def __init__(self, method="uniform", block_size=64):
@@ -126,42 +146,66 @@ class QuantizerFactory:
 
 def mixed_precision_quantize(
     X: torch.Tensor = None,
-    widths: list[int] = 0,
-    quantizers: list[AbstractQuantizer] = None
+    strip_widths: list[int] = 0,
+    quantizers: list[AbstractQuantizer] = None,
+    transposed: bool = False
 ) -> torch.Tensor:
-    assert sum(widths) <= X.shape[1], "sum(widths) should be less than X.shape[1]"
+    """
+    Given a matrix X, quantizes strips of columns with different bit levels.
+    The width of each quantized strip is given by the argument strip_widths,
+    and the corresponding quantizer object for each strip is given by the
+    argument quantizers.
+
+    There is a one-to-one correspondence between the elements of strip_widths
+    and the elements of quantizers, so the lists must be the same length.
+    If sum(strip_widths) is less than the total number of columns in X, the
+    remaining columns are dropped.
+
+    If transposed is set to True, it quantizes strips of rows instead.
+    """
+    assert len(strip_widths) == len(quantizers)
+    if transposed:
+        X = X.T
+
+    assert sum(strip_widths) <= X.shape[1], "sum(widths) should be less than X.shape[1]"
     
-    idxs = np.hstack(([0], np.cumsum(widths)))
+    idxs = np.hstack(([0], np.cumsum(strip_widths)))
     # Perform simulated quantization by quantizing and the dequantizing
-    quantized_components = [quantizers[i].dequantize_block(
-        *quantizers[i].quantize_block(X[:, idxs[i]:idxs[i+1]])
-        ) if quantizers[i].num_bits < 16 else X[:, idxs[i]:idxs[i+1]] \
-            for i in range(len(widths))
+    quantized_components = [
+        simulated_quant(quantizers[i], X[:, idxs[i]:idxs[i+1]]) \
+            for i in range(len(strip_widths)) \
+                if idxs[i+1] > idxs[i]
     ]
-    return torch.cat(quantized_components, dim=1)  
+    X_quant = torch.cat(quantized_components, dim=1)  
+    return X_quant.T if transposed else X_quant
   
 def quantize_small_sv_components(
     X: torch.Tensor = None,
     r: int = 0,
-    quantizer:AbstractQuantizer = None
+    quantizer:AbstractQuantizer = None,
+    transposed: bool = False
 ) -> torch.Tensor:
     """
     Keep the first r columns in original dtype and quantize the last
     (X.shape[1] - r) columns.
+    If "transposed" is True, then quantize rows instead of columns.
     
     The parameter `quantization_fn` allows you to specify uniform quantization
     (via the `quantize` function) or normal float quantization (via the
     `quantize_nf` function).
     """
 
+    if transposed:
+        X = X.T
     assert r <= X.shape[1], "r should be less than X.shape[1]"
 
     if r == X.shape[1]:
         return X
     
     # Perform simulated quantization by quantizing and the dequantizing
-    quantized_component = quantizer.dequantize_block(*quantizer.quantize_block(X[:, r:]))
-    return torch.cat((X[:, :r], quantized_component), dim=1)
+    quantized_component = simulated_quant(quantizer, X[:, r:])
+    X_quant = torch.cat((X[:, :r], quantized_component), dim=1)
+    return X_quant.T if transposed else X_quant
 
 def absmax_quantize_int8(X: torch.Tensor) -> tuple[torch.Tensor, torch.float16]:
     """Quantize each float16/32 data type to int8 and return the maximum value in float16"""

@@ -1,3 +1,115 @@
+def weight_decomposition_wavelet(
+    X: torch.Tensor,
+    ranks: list[int] = None,
+    BLR_list: list[int] = None,
+    wavelet: str = 'haar',
+    sparsity: int = 0,
+    BQ: int = 4,
+    BS: int = 16,
+    quantizer_factory: QuantizerFactory = QuantizerFactory(),
+    iters: int = 50,
+    log_errors: bool = False,
+    verbose: bool = True
+):
+    assert (
+        X.shape[0] >= X.shape[1]
+    ), "Input matrix X should satisfy X.shape[0] >= X.shape[1]"
+
+    CA, (CH, CV, CD) = pywt.dwt2(X.cpu(), wavelet)
+    coeffs_list = [torch.from_numpy(coeffs).to(X.device) for coeffs in (CA, CH, CV, CD)]
+    sparsity //= 4
+    ranks = [rank // 2 for rank in ranks]
+
+    if BQ > 0:
+        quant_Q = quantizer_factory.get_quantizer(BQ, device=X.device)
+    quant_LRs = [
+        quantizer_factory.get_quantizer(B, device=X.device) \
+            for B in BLR_list
+    ]
+    quant_S = quantizer_factory.get_quantizer(BS, device=X.device)
+
+    Qs = []
+    Ls = []
+    Rs = []
+    Ss = []
+
+    for coeffs in coeffs_list:
+        if BQ > 0:
+            Q = quant_Q.dequantize_block(*quant_Q.quantize_block(coeffs))
+        else:
+            Q = torch.zeros_like(coeffs)
+
+        k = sum(ranks)
+        U, Sigma, VT = torch.linalg.svd(coeffs - Q)
+        sqrt_Sigma = torch.diag(torch.sqrt(Sigma[:k]))
+        L = mixed_precision_quantize(U[:,:k] @ sqrt_Sigma, ranks, quant_LRs)
+        R = mixed_precision_quantize(VT.T[:, :k] @ sqrt_Sigma, ranks, quant_LRs).T
+
+        S = torch.zeros_like(coeffs).to(X.device)
+
+        Qs.append(Q)
+        Ls.append(L)
+        Rs.append(R)
+        Ss.append(S)
+    
+    coeff_idxs = range(4)
+
+    errors = []
+    for _ in tqdm(range(iters)):
+        coeffs_approx = []
+        for (i, coeffs, Q, L, R, S) in zip(coeff_idxs, coeffs_list, Qs, Ls, Rs, Ss):
+            ## Update Q
+            if BQ > 0:
+                Q = quant_Q.dequantize_block(*quant_Q.quantize_block(coeffs - L @ R - S))
+
+            # ## Update S
+            if sparsity > 0:
+                S = make_sparse(coeffs - L @ R - Q, sparsity)
+                if BS < 16:
+                    S = quant_S.dequantize_block(*quant_S.quantize_block(S))
+
+            ## Update L, R
+            Y = torch.linalg.lstsq(R.T, (coeffs - Q - S).T)[0].T
+            # Y = (X - Q - S) @ torch.linalg.pinv(R)
+            if not torch.isnan(Y).any().item():
+                L = mixed_precision_quantize(Y, ranks, quant_LRs)
+                # L = quant_LR.dequantize_block(*quant_LR.quantize_block(Y))
+            elif verbose:
+                logger.error(f"NaNs encountered in finding unquantized L.")
+            # U, Sigma, VT = torch.linalg.svd(X - Qp - S)
+            # sqrt_Sigma = torch.diag(torch.sqrt(Sigma[:rank]))
+            # L = quant_LR.dequantize_block(*quant_LR.quantize_block(U[:, :rank] @ sqrt_Sigma))
+
+            W = torch.linalg.lstsq(L, coeffs - Q - S)[0]
+            # W = torch.linalg.pinv(L) @ (X - Q - S)
+            if not torch.isnan(W).any().item():
+                R = mixed_precision_quantize(W.T, ranks, quant_LRs).T   
+                # R = quant_LR.dequantize_block(*quant_LR.quantize_block(W))
+            elif verbose:
+                logger.error(f"NaNs encountered in finding unquantized R.")
+
+            Qs[i] = Q
+            Ls[i] = L
+            Rs[i] = R
+            Ss[i] = S
+
+            coeffs_approx.append(L @ R + Q + S)
+        
+        coeffs_approx = [coeffs.cpu() for coeffs in coeffs_approx]
+        X_hat = pywt.idwt2((coeffs_approx[0], coeffs_approx[1:]), wavelet=wavelet)
+        X_hat = torch.from_numpy(X_hat).to(X.device)
+
+        error = torch.norm(X - X_hat, p="fro").item() \
+            / torch.norm(X, p="fro").item()
+        
+        errors.append(error)
+    out = X_hat
+
+    if log_errors:
+        return (Qs, Ls, Rs, Ss), out, errors
+    return (L, R, Q, S), out
+   
+
 def alternating_mixed_lplr_plus_q(
     X: torch.Tensor = None,
     k: int = None,
