@@ -1,0 +1,14 @@
+{
+    "zero_optimization": {
+        "stage": 2,
+        "overlap_comm": true,
+        "contiguous_gradients": true,
+        "stage3_max_live_parameters": 5e8
+    },
+    "bf16": {
+        "enabled": true,
+        "auto_cast": true
+    },
+    "train_micro_batch_size_per_gpu": "auto",
+    "gradient_accumulation_steps": "auto"
+}

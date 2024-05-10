@@ -1,3 +1,6 @@
 __pycache__
 .python_version
 .conda
+data/
+*.egg-info
+naomi/results

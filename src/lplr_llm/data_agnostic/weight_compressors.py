@@ -3,12 +3,12 @@ from loguru import logger
 import numpy as np
 from scipy.linalg import hadamard
 from tqdm import tqdm
-from lplr_llm.quantization import *
-from lplr_llm.lplr_utils import normalize_and_shift_wrt_inner_prod
+from lplr_llm.utils.quantization import *
+from lplr_llm.utils.lplr_utils import normalize_and_shift_wrt_inner_prod
 from dataclasses import field, dataclass
-from lplr_llm.enums import *
+from lplr_llm.utils.enums import *
 from typing import Union
-from lplr_llm.error_metrics import *
+from lplr_llm.utils.error_metrics import *
 import matplotlib.pyplot as plt
 
 def rademacher_rv(*size):

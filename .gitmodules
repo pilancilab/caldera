@@ -1,0 +1,3 @@
+[submodule "quip-sharp"]
+	path = quip-sharp
+	url = git@github.com:Cornell-RelaxML/quip-sharp.git
