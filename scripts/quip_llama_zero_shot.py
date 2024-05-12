@@ -6,6 +6,7 @@ import json
 from quantize_save_llama import load_quantized_model
 from dataclasses import field, dataclass
 import transformers
+import glob
 
 
 class LMEvalAdaptorWithDevice(LMEvalAdaptor):
@@ -32,7 +33,7 @@ class Arguments:
         "help": ("Path in which the quantized model was saved via "
                  "quantize_save_llama.py")
     })
-    finetine_save_dir: str = field(default=None, metadata={
+    finetune_save_dir: str = field(default=None, metadata={
         "help": ("If using a finetuned model, the directory in which the "
                  "model.safetensors file is stored")
     })
@@ -53,14 +54,20 @@ class Arguments:
     device: str = field(default="cuda:0", metadata={
         "help": "Device on which to run evaluation."
     })
+    ignore_rht_finetuning: bool = field(default=False, metadata={
+        "help": "If RHT finetuning has been performed, do *not* use the RHT-finetuned model."
+    })
 
 
 def test_zero_shot(args: Arguments):
-    model = load_quantized_model(args.model_save_path, args.base_model, args.device)
+    model = load_quantized_model(args.model_save_path, args.base_model, args.device,
+                                 include_rht_finetuning=not args.ignore_rht_finetuning)
     model = model.to(args.device)
-    if args.finetine_save_dir is not None:
-        from safetensors.torch import load_model
-        load_model(model, args.finetine_save_dir + "/model.safetensors", strict=False)
+    if args.finetune_save_dir is not None:
+            from safetensors.torch import load_model
+            for safetensor_file in glob.glob(args.finetune_save_dir + "/model*.safetensors"):
+                print("Loading ", safetensor_file)
+                load_model(model, safetensor_file, strict=False)
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
     print("Loaded model!")
 

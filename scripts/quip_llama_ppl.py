@@ -38,16 +38,21 @@ class Arguments:
     datasets: list[str] = field(default_factory=list, metadata={
         "help": ("Which datasets, out of \"wikitext2\" and \"c4\" to compute "
                  "perplexity. Defaults to both datasets")})
+    ignore_rht_finetuning: bool = field(default=False, metadata={
+        "help": "If RHT finetuning has been performed, do *not* use the RHT-finetuned model."
+    })
 
 
 def test_ppl(args: Arguments):
     
     with torch.no_grad():
-        model = load_quantized_model(args.model_save_path, args.base_model, args.device)
+        model = load_quantized_model(args.model_save_path, args.base_model, args.device,
+                                     include_rht_finetuning=not args.ignore_rht_finetuning)
         model = model.to(args.device).float()
         if args.finetune_save_dir is not None:
             from safetensors.torch import load_model
             for safetensor_file in glob.glob(args.finetune_save_dir + "/model*.safetensors"):
+                print("Loading ", safetensor_file)
                 load_model(model, safetensor_file, strict=False)
             
         if not args.datasets:

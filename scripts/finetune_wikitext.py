@@ -32,6 +32,9 @@ class Arguments:
         "help": ("Path of the original model, as either a local or a "
                  "Huggingface path")
     })
+    ignore_rht_finetuning: bool = field(default=False, metadata={
+        "help": "If RHT finetuning has been performed, do *not* use the RHT-finetuned model."
+    })
 
 @dataclass
 class DataTrainingArguments:
@@ -115,12 +118,14 @@ def main(
     model_save_path: str,
     base_model: str,
     output_dir: str,
+    ignore_rht_finetuning: bool,
     data_args: DataTrainingArguments,
     training_args: TrainingArguments
 ):
     os.makedirs(output_dir, exist_ok=True)
     accelerator = Accelerator()
-    model = load_quantized_model(model_save_path, base_model, accelerator.device)
+    model = load_quantized_model(model_save_path, base_model, accelerator.device,
+                                 include_rht_finetuning=not ignore_rht_finetuning)
     for name, param in model.named_parameters():
         if 'SU' in name or 'SV' in name:
             param.requires_grad = False
@@ -311,6 +316,7 @@ if __name__ == "__main__":
         args.model_save_path,
         args.base_model,
         training_args.output_dir,
+        ignore_rht_finetuning=args.ignore_rht_finetuning,
         data_args=data_args,
         training_args=training_args
     )

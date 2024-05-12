@@ -141,6 +141,7 @@ def load_quantized_model(
     model_save_path,
     base_model,
     device,
+    include_rht_finetuning=True,
     sequence_classification=False
 ):
     if not sequence_classification:
@@ -178,7 +179,8 @@ def load_quantized_model(
 
         model.model.layers[layer_idx] = layer
     
-    if os.path.isfile(model_save_path + "/RHT_ft_model.safetensors"):
+    if include_rht_finetuning and os.path.isfile(model_save_path + "/RHT_ft_model.safetensors"):
+        print("Loading RHT_ft_model.safetensors")
         load_model(model, model_save_path + "/RHT_ft_model.safetensors", strict=False)
 
     return model

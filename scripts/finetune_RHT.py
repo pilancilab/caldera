@@ -28,6 +28,7 @@ class Arguments:
     RHT_lr: float = field(default=1e-3)
     factors_lr: float = field(default=1e-4)
     epochs: int = field(default=5)
+    continue_training: bool = field(default=False)
 
 
 def main(args: Arguments):
@@ -54,7 +55,7 @@ def main(args: Arguments):
     torch.set_grad_enabled(True)
     quant_model = load_quantized_model(
         args.model_save_path, args.base_model, 
-        args.device
+        args.device, include_rht_finetuning=args.continue_training
     ).to(args.device).float()
 
     factor_params = []

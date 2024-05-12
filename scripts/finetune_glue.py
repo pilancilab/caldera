@@ -230,6 +230,12 @@ def parse_args():
         default=None,
         help="Pretrained config name or path if not the same as model_name",
     )
+    parser.add_argument(
+        "--ignore_rht_finetuning",
+        type=bool,
+        default=False,
+        help="If RHT finetuning has been performed, do *not* use the RHT-finetuned model."
+    )
 
     parser.add_argument("--eval", action="store_true", help="whether doing evaluation")
     args = parser.parse_args()
@@ -390,7 +396,8 @@ def main():
     # Model and tokenizer
     model = load_quantized_model(
         args.model_name_or_path, args.base_model, 
-        accelerator.device, sequence_classification=True
+        accelerator.device, sequence_classification=True,
+        include_rht_finetuning=not args.ignore_rht_finetuning
     )
     for name, param in model.named_parameters():
         if 'SU' in name or 'SV' in name:
