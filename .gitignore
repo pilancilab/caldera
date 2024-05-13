@@ -4,3 +4,5 @@ __pycache__
 data/
 *.egg-info
 naomi/results
+.gitconfig
+.vscode/settings.json
