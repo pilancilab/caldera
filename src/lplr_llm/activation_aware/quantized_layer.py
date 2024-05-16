@@ -44,6 +44,26 @@ class LatticeQuantizedParameter(nn.Module):
             self.register_buffer(f'idxs_{i}', split_idxs[i].to(idxs_dev))
             exec(f'self.idxs_list.append(self.idxs_{i})')
 
+    def get_W_decompressed(self):
+        n = self.in_features
+        m = self.out_features
+        if self.codebook_version == 'E8P12':
+            return quiptools_cuda.decompress_packed_e8p(
+                    self.idxs_list[0].view(m // 16, n // 64, 8, 4),
+                    self.codebook.grid_packed_abs) * self.scale
+        elif self.codebook_version == 'E8P12RVQ4B':
+            resid_scale = self.codebook.opt_resid_scale
+            return (quiptools_cuda.decompress_packed_e8p(
+                    self.idxs_list[0].view(m // 16, n // 64, 8, 4),
+                    self.codebook.grid_packed_abs) + \
+                        quiptools_cuda.decompress_packed_e8p(
+                            self.idxs_list[1].view(m // 16, n // 64, 8, 4),
+                            self.codebook.grid_packed_abs
+                        ) / resid_scale) * self.scale
+            
+        else:
+            raise NotImplementedError
+
     def forward(self, x, float_precision=False):
         dtype = x.dtype
         n = self.in_features
@@ -184,7 +204,7 @@ class LPLRQuantizedLinear(nn.Module):
             scale=Q_scale,
             codebook_version=Q_codebook_version
         )
-
+    
         self.L_idxs = L_idxs
         self.R_idxs = R_idxs
         self.L_codebook_version = L_codebook_version
@@ -272,12 +292,12 @@ class LPLRQuantizedLinear(nn.Module):
             if self.quant_R:
                 xR = self.R.forward(x, float_precision=True)
             else:
-                xR = x @ self.R.T
+                xR = (x.float() @ self.R.T.float())
 
             if self.quant_L:
                 output_no_ft += self.L.forward(xR, float_precision=True)
             else:
-                output_no_ft += xR @ self.L.T
+                output_no_ft += (xR.float() @ self.L.T.float()).to(torch.bfloat16)
 
         # Apply LoRA factors
         if self.ft_rank > 0:
@@ -291,7 +311,6 @@ class LPLRQuantizedLinear(nn.Module):
         output = output * self.SV
         if self.scaleWH is not None:
             output *= self.scaleWH
-
         return output.view(*shape[:-1], m).to(old_dtype)
 
     def compare_outputs(self, input, W_hat):

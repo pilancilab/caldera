@@ -6,7 +6,7 @@
         "stage3_max_live_parameters": 5e8
     },
     "bf16": {
-        "enabled": true,
+        "enabled": "auto",
         "auto_cast": true
     },
     "train_micro_batch_size_per_gpu": "auto",

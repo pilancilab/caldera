@@ -398,7 +398,7 @@ def main():
         args.model_name_or_path, args.base_model, 
         accelerator.device, sequence_classification=True,
         include_rht_finetuning=not args.ignore_rht_finetuning
-    )
+    ).to(torch.bfloat16)
     for name, param in model.named_parameters():
         if 'SU' in name or 'SV' in name:
             param.requires_grad = False

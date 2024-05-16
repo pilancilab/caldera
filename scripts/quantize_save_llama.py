@@ -142,7 +142,8 @@ def load_quantized_model(
     base_model,
     device,
     include_rht_finetuning=True,
-    sequence_classification=False
+    sequence_classification=False,
+    unquantize_LR=True
 ):
     if not sequence_classification:
         model = AutoModelForCausalLM.from_pretrained(
@@ -176,6 +177,15 @@ def load_quantized_model(
             if sublayer.ft_rank > 0:
                 sublayer.L_ft = torch.nn.Parameter(sublayer.L_ft.contiguous(), requires_grad=True)
                 sublayer.R_ft = torch.nn.Parameter(sublayer.R_ft.contiguous(), requires_grad=True)
+            if unquantize_LR and sublayer.L is not None:
+                if sublayer.quant_L:
+                    sublayer.L = torch.nn.Parameter(sublayer.L.get_W_decompressed().to(torch.bfloat16).T.contiguous(),
+                                                    requires_grad=False)
+                    sublayer.quant_L = False
+                if sublayer.quant_R:
+                    sublayer.R = torch.nn.Parameter(sublayer.R.get_W_decompressed().contiguous().to(torch.bfloat16),
+                                                    requires_grad=False)
+                    sublayer.quant_R = False
 
         model.model.layers[layer_idx] = layer
     
