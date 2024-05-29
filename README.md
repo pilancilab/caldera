@@ -1,5 +1,5 @@
 # CALDERA (Calibration Aware Low-Precision DEcomposition with Low-Rank Adaptation)
-Code for the paper "Compressing Large Language Models using Low Rank and Low Precision Decomposition," submitted to NeurIPS 2024.
+
 CALDERA is a post-training compression method that represents the weights of LLM matrices via a low-rank, low-precision decomposition $\mathbf{W} \approx \mathbf{Q} + \mathbf{L} \mathbf{R}$, where $\mathbf{L}$ and $\mathbf{R}$ are low-rank factors and $\mathbf{Q}, \mathbf{L}$ and $\mathbf{R}$ are all quantized to low-precision formats.
 By formatting this decomposition as an optimization problem and solving it via alternating minimization, CALDERA outperforms existing compression techniques in the regine of less than 2.5 bits per parameter.
 
