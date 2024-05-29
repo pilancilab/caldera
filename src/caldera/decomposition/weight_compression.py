@@ -9,13 +9,16 @@ import torch
 import torch.multiprocessing as mp
 import gc
 
-from lplr_llm.activation_aware.dataclasses import *
-from lplr_llm.utils.enums import DevSet
-from lplr_llm.activation_aware.layer_quantization import \
+from caldera.decomposition.dataclasses import *
+from caldera.utils.enums import DevSet
+from caldera.decomposition.layer_quantization import \
     ActivationAwareLayerQuant
 
-from lplr_llm.utils.enums import DevSet
+from caldera.utils.enums import DevSet
 import os
+
+
+# Partially adapted from https://github.com/Cornell-RelaxML/quip-sharp
 
 
 class ActivationAwareWeightCompressor:
@@ -38,7 +41,7 @@ class ActivationAwareWeightCompressor:
             self,
             model_params: ModelParameters = ModelParameters(),
             data_params: DataParameters = DataParameters(),
-            quant_params: ActivationAwareQuantParams = ActivationAwareQuantParams(),
+            quant_params: CalderaParams = CalderaParams(),
             quant_device: str = "cuda",
             hessian_save_path: str = "",
             start_at_layer: int = 0,
@@ -157,29 +160,24 @@ class ActivationAwareWeightCompressor:
             self.dev_emb.share_memory_()
 
             # Attention mask and position IDs
-            if model_params.hardcode_attn_mask:
-                self.position_ids = torch.arange(
-                        data_params.context_length, dtype=torch.int64
-                    )[None, :] + torch.zeros(
-                        data_params.batch_size,
-                        data_params.context_length,
-                        dtype=torch.int64
-                    )
+            self.position_ids = torch.arange(
+                    data_params.context_length, dtype=torch.int64
+                )[None, :] + torch.zeros(
+                    data_params.batch_size,
+                    data_params.context_length,
+                    dtype=torch.int64
+                )
 
-                if hasattr(self.model.config, 'sliding_window'):
-                    self.attention_mask = _prepare_4d_causal_attention_mask(
-                        None, (data_params.batch_size, data_params.context_length),
-                        self.dev_emb[0:data_params.batch_size], 0,
-                        sliding_window=self.model.config.sliding_window
-                    )
-                else:
-                    self.attention_mask = _prepare_4d_causal_attention_mask(
-                        None, (data_params.batch_size, data_params.context_length),
-                        self.dev_emb[0:data_params.batch_size], 0
-                    )
+            if hasattr(self.model.config, 'sliding_window'):
+                self.attention_mask = _prepare_4d_causal_attention_mask(
+                    None, (data_params.batch_size, data_params.context_length),
+                    self.dev_emb[0:data_params.batch_size], 0,
+                    sliding_window=self.model.config.sliding_window
+                )
             else:
-                raise NotImplementedError(
-                    "Only hardcoded attention mask implemented so far"
+                self.attention_mask = _prepare_4d_causal_attention_mask(
+                    None, (data_params.batch_size, data_params.context_length),
+                    self.dev_emb[0:data_params.batch_size], 0
                 )
 
     def _process_layer(
@@ -207,11 +205,6 @@ class ActivationAwareWeightCompressor:
         ngpus = min(len(devices_available), len(self.dev_emb) // chunk_size)
         devices = devices_available[:ngpus]
         print(f"Computing hessians on {devices}")
-
-        # save layer input
-        # torch.save(
-        #     {'dev_emb': self.dev_emb},layer_quant.validate_H(TransformerSubLayers.VALUE)
-        #     f'{hessian_save_path}/{transformer_layer_index}_input_data.pt')
 
         manager = mp.get_context('spawn').Manager()
         in_q = manager.Queue()

@@ -176,12 +176,6 @@ def parse_args():
     )
     parser.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
-    parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
-    parser.add_argument("--use_fp16", action="store_true", help="use float point 16")
-    parser.add_argument(
-        "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
-    )
-    parser.add_argument("--hub_token", type=str, help="The token to use to push to the Model Hub.")
     parser.add_argument(
         "--trust_remote_code",
         type=bool,
@@ -220,11 +214,6 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--ignore_mismatched_sizes",
-        action="store_true",
-        help="Whether or not to enable to load a pretrained model whose head dimensions are different.",
-    )
-    parser.add_argument(
         "--config_name",
         type=str,
         default=None,
@@ -234,10 +223,9 @@ def parse_args():
         "--ignore_rht_finetuning",
         type=bool,
         default=False,
-        help="If RHT finetuning has been performed, do *not* use the RHT-finetuned model."
+        help="If RHT finetuning has been performed on the CALDERA model, do *not* use the RHT-finetuned model."
     )
 
-    parser.add_argument("--eval", action="store_true", help="whether doing evaluation")
     args = parser.parse_args()
 
     # Sanity checks
@@ -251,10 +239,6 @@ def parse_args():
             extension = args.validation_file.split(".")[-1]
             assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
 
-    if args.push_to_hub:
-        assert args.output_dir is not None, "Need an `output_dir` to create a repo when `--push_to_hub` is passed."
-
-    print(args)
     return args
 
 
@@ -264,15 +248,14 @@ def run_eval(eval_dataloader, model, accelerator, is_regression, metric):
     for step, batch in enumerate(eval_dataloader):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
             with torch.no_grad():
-                # batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
                 predictions = model(**batch)
         
         references = batch["labels"]
         predictions, references = accelerator.gather_for_metrics((predictions, references))
         
-        # print(predictions.logits)
         if predictions.logits.isnan().any():
-            print("WARNING NaN OUTPUT LOGITS")
+            print("Warning: some of the output logits for evaluation were NaN!")
+
         predictions = predictions.logits.argmax(dim=-1) if not is_regression else predictions.logits.squeeze()
         # If we are in a multiprocess environment, the last batch has duplicates
         if step == len(eval_dataloader) - 1:
@@ -503,10 +486,6 @@ def main():
         train_dataset = processed_datasets["train"]
         eval_dataset = processed_datasets["validation_matched" if args.task_name == "mnli" else "validation"]
 
-    # # Log a few random samples from the training set:
-    # for index in random.sample(range(len(train_dataset)), 3):
-    #     print(f"Sample {index} of the training set: {train_dataset[index]}.")
-
     # DataLoaders creation:
     if args.pad_to_max_length:
         # If padding was already done ot max length, we use the default data collator that will just convert everything
@@ -516,7 +495,7 @@ def main():
         # Otherwise, `DataCollatorWithPadding` will apply dynamic padding for us (by padding to the maximum length of
         # the samples passed). When using mixed precision, we add `pad_to_multiple_of=8` to pad all tensors to multiple
         # of 8s, which will enable the use of Tensor Cores on NVIDIA hardware with compute capability >= 7.5 (Volta).
-        data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=(8 if args.use_fp16 else None))
+        data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=None)
 
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
@@ -709,9 +688,6 @@ def main():
 
         model.eval()
         eval_metric = run_eval(eval_dataloader, model, accelerator, is_regression, metric)
-
-        # for k, v in eval_metric.items():
-        #     writer.add_scalar(f"eval/{args.output_dir}/{k}", v, global_step=epoch)
         logger.info(f"{args.output_dir} | epoch {epoch}: {eval_metric}")
         if args.with_tracking:
             accelerator.log(
@@ -725,13 +701,11 @@ def main():
             )
         performace_dict[epoch] = eval_metric[task_to_metrics[args.task_name]]
 
-        # torch.save(model.state_dict(), args.output_dir + f"/{completed_steps}.bin")
+        torch.save(model.state_dict(), args.output_dir + f"/{completed_steps}.bin")
 
     model.eval()
     eval_metric = run_eval(eval_dataloader, model, accelerator, is_regression, metric)
 
-    # for k, v in eval_metric.items():
-    #     writer.add_scalar(f"eval/{args.output_dir}/{k}", v, global_step=completed_steps)
     print(f"{args.output_dir} | step {completed_steps}: {eval_metric}")
     if not eval:
         best_performance = max(performace_dict.values())
@@ -746,7 +720,6 @@ def main():
         eval_dataloader = DataLoader(
             eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
         )
-        # eval_dataloader = accelerator.prepare(eval_dataloader)
 
         eval_metric = run_eval(eval_dataloader, model, accelerator, is_regression, metric)
         print(f"{args.output_dir}|mnli-mm: {eval_metric}")

@@ -1,9 +1,8 @@
-from lplr_llm.utils.enums import DevSet
-from lplr_llm.utils.quantization import QuantizerFactory, \
+from caldera.utils.enums import DevSet
+from caldera.utils.quantization import QuantizerFactory, \
     AbstractQuantizer, LowMemoryQuantizer
 
 from dataclasses import field, dataclass
-from typing import Union
 import torch
 
 
@@ -35,7 +34,8 @@ class DataParameters:
     )
     chunk_size: int = field(
         default=256, metadata={"help": (
-            "Number of batches sent to each GPU at a time."
+            "Number of datapoints sent to each GPU at a time. "
+            "Must be a multiple of batch_size"
         )}
     )
     devices: list[str] = field(
@@ -55,14 +55,6 @@ class ModelParameters:
     base_model: str = field(
         default="meta-llama/Llama-2-7b-hf", metadata={"help": (
             "Model to quantize."
-        )}
-    )
-    hardcode_attn_mask: bool = field(
-        default=True, metadata={"help": (
-            "Whether or not to hardcode the model's attention mask and "
-            "position IDs, or to replace the first layer with a \"catcher\" "
-            "class to automatically detect these quantities. The hardcoded "
-            "attention mask is only guaranteed to work for LLaMa."
         )}
     )
     token: str = field(default=None, metadata={
@@ -108,9 +100,9 @@ class QuIPArgs:
 
 
 @dataclass
-class ActivationAwareQuantParams:
+class CalderaParams:
     """
-    Parameters for our activation-aware Q + LPLR algorithm.
+    Parameters for the CALDERA decomposition.
     """
     quip_args: QuIPArgs = field(default_factory=QuIPArgs)
     compute_quantized_component: bool = field(
@@ -147,21 +139,17 @@ class ActivationAwareQuantParams:
     })
     lattice_quant_Q: bool = field(default=True, metadata={
         "help": ("If Q is not data-aware, this determines whether to use "
-                 "lattice quantization, as opposed to LPLR-LLM quantization "
+                 "lattice quantization, as opposed to unif/normal float quantization "
                  "implementations.")
     })
     lattice_quant_LR: bool = field(default=True, metadata={
         "help": ("Use lattice quantization from the QuIP# codebase, as opposed"
-                 " to RTN or normal float from LPLR-LLM, for L and R")
+                 " to uniform or normal float, for L and R")
     })
     hadamard_transform: bool = field(default=False, metadata={
         "help": ("Whether to perform a randomized Hadamard transform on W "
                  "before computing the decomposition W = Q + LR.")
     })
-    hadamard_transform_L: bool = field(default=False)
-    hadamard_transform_R: bool = field(default=False)
-    Haar_transform_L: bool = field(default=False)
-    verbose: bool = field(default=False)
     full_quip_sharp: bool = field(default=False, metadata={
         "help": ("If Q is activation-aware and this parameter is True, then "
                  "Q is computed using the full quip-sharp algorithm. "
@@ -174,7 +162,7 @@ class ActivationAwareQuantParams:
     })
     quant_factory_Q: QuantizerFactory = field(
         default_factory=QuantizerFactory, metadata={"help": (
-            "(Non-data-aware only) QuantizerFactory (from lplr_llm.quantizers)"
+            "(Non-data-aware only) QuantizerFactory (from caldera.utils.quantizers)"
             "  object used to instantiate quantizer for Q. Only used if "
             "activation_aware_Q is False."
         )}
@@ -182,7 +170,7 @@ class ActivationAwareQuantParams:
     quant_factory_LR: QuantizerFactory = field(
         default_factory=QuantizerFactory, metadata={"help": (
             "(Non-lattice quant only) QuantizerFactory (from "
-            "lplr_llm.quantizers) object used to instantiate quantizer for L "
+            "caldera.utils.quantizers) object used to instantiate quantizer for L "
             "and R. Only used if lattice_quant_LR is False."
         )}
     )
@@ -193,9 +181,6 @@ class ActivationAwareQuantParams:
         "help": ("Whether to do quip-sharp's heuristic Hessian correction"
                  "via Cholesky downdating before updating Q.")
     })
-    quip_sharp_initialization: bool = field(default=False, metadata={
-        "help": ("Whether to initialize our algorithm using QuIP#.")
-    })
     lattice_quant_block_size: int = field(default=32000, metadata={
         "help": ("For lattice quantization, quantize parameters in groups of "
                  "(codesize * lattice_quant_block_size) to reduce memory "
@@ -203,7 +188,7 @@ class ActivationAwareQuantParams:
     })
 
 @dataclass
-class LPLRQInfo:
+class CalderaDecomposition:
     Q: torch.Tensor = field(default=None)
     L: torch.Tensor = field(default=None)
     R: torch.Tensor = field(default=None)
@@ -227,23 +212,23 @@ class SubLayerInfo:
     Class for storing information about a transformer sub-layer (i.e., one of
     {query, key, value, out, gate, up, down}), including the computed
     decomposition Q + LR, and the activation-aware error at each iteration of
-    the Q + LPLR algorithm.
+    the CALDERA algorithm.
     """
     sublayer: torch.nn.Module = field(default=None)
     key: str = field(default="")
     out_key: str = field(default="")
     started_quant: bool = field(default=False)
-    lplr_q: LPLRQInfo = field(default_factory=LPLRQInfo)
+    caldera: CalderaDecomposition = field(default_factory=CalderaDecomposition)
 
 
 @dataclass
 class QuantInfo:
     """
     Stores information necessary for quantizing a specific matrix:
-        1. Whether to use lattice quantization (QuIP#) or RTN/NormalFloat
-            quantization (LPLR-LLM).
+        1. Whether to use lattice quantization (QuIP#) or Unif./NormalFloat
+            quantization.
         2. If lattice quantization is used, the codebook.
-        3. If LPLR-LLM quantization methods are used, the quantizer object.
+        3. If our quantization methods are used, the quantizer object.
     """
     lattice_quant: bool = field(default=True)
     lattice_cb: torch.nn.Module = field(default=None)

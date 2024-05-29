@@ -1,6 +1,6 @@
 import transformers
+from caldera.decomposition.weight_compression import *
 
-from lplr_llm.activation_aware.weight_compression import *
 
 @dataclass
 class Arguments:

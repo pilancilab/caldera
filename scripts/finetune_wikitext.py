@@ -1,4 +1,3 @@
-from argparse_dataclass import ArgumentParser
 from datasets import load_dataset
 import transformers
 from transformers import (
@@ -13,7 +12,6 @@ import math
 import logging
 from itertools import chain
 import evaluate
-import sys
 from dataclasses import dataclass, field
 from typing import Optional
 from transformers.utils.versions import require_version
@@ -263,24 +261,6 @@ def main(
         max_train_samples = min(len(train_dataset), data_args.max_train_samples)
         train_dataset = train_dataset.select(range(max_train_samples))
 
-    def preprocess_logits_for_metrics(logits, labels):
-        if isinstance(logits, tuple):
-            # Depending on the model and config, logits may contain extra
-            # tensors, like past_key_values, but logits always come first
-            logits = logits[0]
-        return logits.argmax(dim=-1)
-
-    metric = evaluate.load("accuracy")
-
-    def compute_metrics(eval_preds):
-        preds, labels = eval_preds
-        # preds have the same shape as the labels, after the argmax(-1) has
-        # been calculated by preprocess_logits_for_metrics but we need to
-        # shift the labels
-        labels = labels[:, 1:].reshape(-1)
-        preds = preds[:, :-1].reshape(-1)
-        return metric.compute(predictions=preds, references=labels)
-
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -288,9 +268,7 @@ def main(
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         # Data collator will default to DataCollatorWithPadding
-        data_collator=default_data_collator,
-        compute_metrics=compute_metrics,
-        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
+        data_collator=default_data_collator
     )
 
     # train?

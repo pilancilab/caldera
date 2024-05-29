@@ -8,6 +8,7 @@ import os
 import json
 import glob
 
+# Adapted from https://github.com/Cornell-RelaxML/quip-sharp
 
 @dataclass
 class Arguments:
@@ -43,7 +44,7 @@ class Arguments:
     })
 
 
-def test_ppl(args: Arguments):
+def eval_ppl(args: Arguments):
     
     with torch.no_grad():
         model = load_quantized_model(args.model_save_path, args.base_model, args.device,
@@ -94,7 +95,6 @@ def test_ppl(args: Arguments):
 
         if args.output_path is not None:
             os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-            # otherwise cannot save
             with open(args.output_path + ".json", "w") as f:
                 json.dump(ppls, f, indent=2)
 
@@ -102,4 +102,4 @@ def test_ppl(args: Arguments):
 if __name__ == "__main__":
     parser = transformers.HfArgumentParser([Arguments])
     args = parser.parse_args_into_dataclasses()[0]
-    test_ppl(args)
+    eval_ppl(args)

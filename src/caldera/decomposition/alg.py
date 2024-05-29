@@ -5,13 +5,12 @@ from lib import codebook
 import torch
 from tqdm import tqdm
 
-from lplr_llm.activation_aware.dataclasses import *
-from lplr_llm.utils.quantization import QuantizerFactory
+from caldera.decomposition.dataclasses import *
+from caldera.utils.quantization import QuantizerFactory
 
 from collections import namedtuple
 from copy import deepcopy
 
-from lib.utils.matmul_had import matmul_hadU, matmul_hadUt
 
 # Maps number of bits to name of the QuIP# lattice quantizer
 BITS_TO_CODEBOOK = {
@@ -20,14 +19,19 @@ BITS_TO_CODEBOOK = {
     4: 'E8P12RVQ4B'
 }
 
-def LPLRq(
-    quant_params: ActivationAwareQuantParams,
+def caldera(
+    quant_params: CalderaParams,
     W: torch.Tensor,
     H: torch.Tensor = None,
     device: str = "cuda",
     use_tqdm: bool = True,
     scale_W: bool = True,
 ):
+    """
+    Runs the CALDERA algorithm, to decompose a weight matrix into Q + LR, where
+    Q is full-rank, L and R are low-rank factors, and all matrices are in a low-
+    precision format.
+    """
     # scaling
     if scale_W:
         global_scale = W.square().mean().sqrt().item()
@@ -41,39 +45,32 @@ def LPLRq(
     # Compute the symmetric square root of H, because the data-aware
     # objective can be formulated as
     # min_{L, R} ||(W - LR - Q)H^{1/2}||_F^2.
+    EigTuple = namedtuple("EigTuple", ["eigenvalues", "eigenvectors"])
     if not quant_params.activation_aware_LR and not quant_params.activation_aware_Q \
             and not quant_params.full_quip_sharp:
         H_sqrt = H
-        EigTuple = namedtuple("EigTuple", ["eigenvalues", "eigenvectors"])
         eigH = EigTuple(torch.ones(W.shape[1]).to(device), H)
     else:
         eigH = torch.linalg.eigh(H)
 
-        if eigH.eigenvalues.min() < quant_params.quip_args.sigma_reg:
-            H = H + (quant_params.quip_args.sigma_reg - eigH.eigenvalues.min()) * \
+        eigvals = eigH.eigenvalues
+        if eigvals.min() < quant_params.quip_args.sigma_reg:
+            H = H + (quant_params.quip_args.sigma_reg - eigvals.min()) * \
                     torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
+            eigvals += quant_params.quip_args.sigma_reg - eigvals.min()
+            eigH = EigTuple(eigvals, eigH.eigenvectors)
             
         H_sqrt = (eigH.eigenvectors @
-                    torch.diag(torch.sqrt(eigH.eigenvalues)) @
+                    torch.diag(torch.sqrt(eigvals)) @
                     eigH.eigenvectors.T)
     
     # Initialization and Hadamard transform
-    best_decomp = LPLRQInfo(
+    best_decomp = CalderaDecomposition(
         Q=torch.zeros_like(W).float(),
         L=torch.zeros(W.shape[0], quant_params.rank).to(device),
         R=torch.zeros(quant_params.rank, W.shape[1]).to(device))
-    
-    if quant_params.quip_sharp_initialization:
-            quant_params.hadamard_transform = True
-            W, H, best_decomp = \
-                quip_sharp_initialization(W, H, quant_params)
 
-            eigH = torch.linalg.eigh(H)
-            H_sqrt = (eigH.eigenvectors @
-                      torch.diag(torch.sqrt(eigH.eigenvalues)) @
-                      eigH.eigenvectors.T)
-
-    elif quant_params.hadamard_transform:
+    if quant_params.hadamard_transform:
         _, H, W, SU, SV, scaleWH = quip.incoherence_preprocess(
             H, W, quant_params.quip_args
         )
@@ -98,6 +95,8 @@ def LPLRq(
     min_error = float('inf')
     curr_decomp = deepcopy(best_decomp)
 
+    updated = {mtx: False for mtx in quant_params.update_order}
+    
     to_iter = range(quant_params.iters)
     if use_tqdm:
         to_iter = tqdm(to_iter)
@@ -107,11 +106,12 @@ def LPLRq(
                 maybe_update_LR(curr_decomp, quant_params, W, H_sqrt, eigH, device)
             elif mtx == "Q":
                 maybe_update_Q(curr_decomp, quant_params, W, H, device)
+            updated[mtx] = True
             
             errors[mtx].append(
                 activation_aware_error(W, H, curr_decomp, device)
             )
-            if errors[mtx][-1] < min_error:
+            if errors[mtx][-1] < min_error and all(updated.values()):
                 min_error = errors[mtx][-1]
                 best_decomp = deepcopy(curr_decomp)
     best_decomp.errors = errors
@@ -124,7 +124,7 @@ def LPLRq(
 def activation_aware_error(
     W: torch.Tensor,
     H: torch.Tensor,
-    lplr_q_info: LPLRQInfo, 
+    caldera_info: CalderaDecomposition, 
     device: str
 ):
     """
@@ -134,58 +134,12 @@ def activation_aware_error(
     """
 
     W = W.to(device).float()
-    W_hat = lplr_q_info.Q + lplr_q_info.L @ lplr_q_info.R
-    W_hat *= lplr_q_info.global_scale
+    W_hat = caldera_info.Q + caldera_info.L @ caldera_info.R
+    W_hat *= caldera_info.global_scale
 
     error = (torch.trace((W_hat - W) @ H @ (W_hat - W).T) / 
-                torch.trace(W @ H @ W.T)).item()
+                torch.trace(W @ H @ W.T)).sqrt().item()
     return error
-
-def quip_sharp_initialization(
-    W, H, quant_params, device
-):
-    codebook_str = BITS_TO_CODEBOOK[quant_params.Q_bits]
-    cb = codebook.get_codebook(codebook_str).to(W.device)
-
-    old_lora_rank = quant_params.quip_args.lora_rank
-    quant_params.quip_args.lora_rank = quant_params.rank
-    Q, attr = quip.quantize(
-        H_orig=H,
-        W_orig=W,
-        rank=quant_params.rank,
-        codebook_orig=cb,
-        args=quant_params.quip_args,
-        device=device
-    )
-    Q_idxs = attr['Qidxs'].to(device)
-    scaleWH = attr['scaleWH']
-    SU = attr['SU'].to(device)
-    SV = attr['SV'].to(device)
-
-    Q = quip.RHT_W(
-        Q, SU, 1 / SV).float()
-    if scaleWH is not None:
-        Q *= scaleWH[None, :]
-
-    if quant_params.quip_args.lora_rank != 0:
-        L = attr['A'].to(device).float()
-        R = attr['B'].to(device).float()
-        Q -= L @ R
-
-    quant_params.quip_args.lora_rank = old_lora_rank
-
-    # Re-do the incoherence pre-processing
-    if scaleWH is not None:
-        W *= scaleWH[None, :]
-        H /= scaleWH[None, :]
-        H /= scaleWH[:, None]
-
-    H = quip.RHT_H(H, SU)
-    W = quip.RHT_W(W, SU, 1 / SV)
-
-    QuIPSharpInit = namedtuple("QuIPSharpInit", ["W", "H", "lplr_info"])
-    return QuIPSharpInit(W, H, LPLRQInfo(
-        W=W, Q=Q, L=L, R=R, Q_idxs=Q_idxs, SU=SU, SV=SV, scaleWH=scaleWH))
 
 
 def get_quant_info(
@@ -245,26 +199,26 @@ def quantize_matrix(
 
 
 def maybe_update_Q(
-    lplr_q_info: LPLRQInfo,
-    quant_params: ActivationAwareQuantParams,
+    caldera_info: CalderaDecomposition,
+    quant_params: CalderaParams,
     W: torch.Tensor,
     H: torch.Tensor,
     device: str
 ):
 
     if quant_params.compute_quantized_component:
-        residual = W - lplr_q_info.L @ lplr_q_info.R
+        residual = W - caldera_info.L @ caldera_info.R
         if not quant_params.compute_low_rank_factors:
             residual = W
         if quant_params.activation_aware_Q:
-            update_Q_data_aware(lplr_q_info, quant_params, H, residual, device)
+            update_Q_data_aware(caldera_info, quant_params, H, residual, device)
         else:
-            update_Q_non_data_aware(lplr_q_info, quant_params, residual, device)
+            update_Q_non_data_aware(caldera_info, quant_params, residual, device)
 
 
 def update_Q_non_data_aware(
-    lplr_q_info: LPLRQInfo,
-    quant_params: ActivationAwareQuantParams,
+    caldera_info: CalderaDecomposition,
+    quant_params: CalderaParams,
     residual: torch.Tensor,
     device: str
 ):
@@ -276,20 +230,20 @@ def update_Q_non_data_aware(
     )
 
     quant_return = quantize_matrix(residual, quant_params, quant_info)
-    lplr_q_info.Q = quant_return.A_hat
-    lplr_q_info.Q_idxs = quant_return.A_idxs
-    lplr_q_info.Q_scale = quant_return.scale
+    caldera_info.Q = quant_return.A_hat
+    caldera_info.Q_idxs = quant_return.A_idxs
+    caldera_info.Q_scale = quant_return.scale
 
 
 def update_Q_data_aware(
-    lplr_q_info: LPLRQInfo,
-    quant_params: ActivationAwareQuantParams,
+    caldera_info: CalderaDecomposition,
+    quant_params: CalderaParams,
     H: torch.Tensor,
     residual: torch.Tensor,
     device: str
 ):
     """
-    Perform a QuIP# update on (W - LR)
+    Performs an LDLQ update on the residual (W - LR)
     """
 
     # Scale the residual, as done in the quantize_linear function of QuIP#
@@ -305,17 +259,18 @@ def update_Q_data_aware(
         M = torch.linalg.cholesky(H)
         if quant_params.rand_svd:
             _, _, V = torch.svd_lowrank(
-                lplr_q_info.L @ lplr_q_info.R @ M,
+                caldera_info.L @ caldera_info.R @ M,
                 quant_params.rank * 3, niter=10)
             V = V[:, :quant_params.rank]
         else:
             _, _, Vh = torch.linalg.svd(
-                lplr_q_info.L @ lplr_q_info.R @ M, full_matrices=False)
+                caldera_info.L @ caldera_info.R @ M, full_matrices=False)
             V = Vh.T[:, :quant_params.rank]
 
         H = H - (M @ V @ V.T @ M.T).to(H.dtype)
         min_eigval = torch.linalg.eigh(H).eigenvalues.min()
-        H = H + min_eigval.abs() * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
+        if min_eigval < 0:
+            H = H + min_eigval.abs() * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
         alpha = torch.diag(H).mean().abs() * quant_params.quip_args.sigma_reg2
         H = H + alpha * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
 
@@ -328,7 +283,7 @@ def update_Q_data_aware(
             ("Full QuIP# incompatible with separately computing low-rank "
             "factors.")
 
-        lplr_q_info.Q, attr = quip.quantize(
+        caldera_info.Q, attr = quip.quantize(
             H_orig=H,
             W_orig=residual,
             rank=0,
@@ -336,17 +291,17 @@ def update_Q_data_aware(
             args=quant_params.quip_args,
             device=device
         )
-        lplr_q_info.Q_idxs = attr['Qidxs'].to(device)
+        caldera_info.Q_idxs = attr['Qidxs'].to(device)
 
-        lplr_q_info.scaleWH = attr['scaleWH']
-        lplr_q_info.SU = attr['SU']
-        lplr_q_info.SV = attr['SV']
+        caldera_info.scaleWH = attr['scaleWH']
+        caldera_info.SU = attr['SU']
+        caldera_info.SV = attr['SV']
         if quant_params.quip_args.lora_rank != 0:
-            lplr_q_info.L = attr['A'].to(device) / lplr_q_info.SV[0].abs().sqrt()
-            lplr_q_info.R = attr['B'].to(device) / lplr_q_info.SV[0].abs().sqrt()
-            lplr_q_info.L_scale = scale
-            lplr_q_info.R_scale = scale
-            lplr_q_info.Q -= lplr_q_info.L @ lplr_q_info.R
+            caldera_info.L = attr['A'].to(device) / caldera_info.SV[0].abs().sqrt()
+            caldera_info.R = attr['B'].to(device) / caldera_info.SV[0].abs().sqrt()
+            caldera_info.L_scale = scale
+            caldera_info.R_scale = scale
+            caldera_info.Q -= caldera_info.L @ caldera_info.R
 
     else:
         # Just do LDLQ
@@ -371,25 +326,30 @@ def update_Q_data_aware(
             Q, Qidxs = quip.LDLQ_buffered(
                 residual, H, L, D, cb, quant_params.quip_args,
                 buf_cols=128)
-        lplr_q_info.Q_idxs = Qidxs
-        lplr_q_info.Q = Q
-        lplr_q_info.Q_idxs = cb.maybe_pack_idxs(lplr_q_info.Q_idxs)
+        caldera_info.Q_idxs = Qidxs
+        caldera_info.Q = Q
+        caldera_info.Q_idxs = cb.maybe_pack_idxs(caldera_info.Q_idxs)
 
-    lplr_q_info.Q_scale = scale
-    lplr_q_info.Q *= scale
+    caldera_info.Q_scale = scale
+    caldera_info.Q *= scale
 
 
 def LR_init(
-    lplr_q_info: LPLRQInfo,
-    quant_params: ActivationAwareQuantParams,
+    caldera_info: CalderaDecomposition,
+    quant_params: CalderaParams,
     H_sqrt: torch.Tensor,
     eigH: torch.Tensor,
     residual: torch.Tensor
 ):
+    """
+    Runs rank-constrained regression to minimize
+    ||(residual - LR) eigH||_F^2
+    over L, R in closed-form.
+    """
     if quant_params.activation_aware_LR:
         Y = residual @ H_sqrt @ eigH.eigenvectors
         if quant_params.rand_svd:
-            q = min(quant_params.rank*2, min(*lplr_q_info.W.shape))
+            q = min(quant_params.rank*2, min(*caldera_info.W.shape))
             U, Sigma, V = torch.svd_lowrank(Y, q)
             Vh = V.T
         else:
@@ -402,7 +362,7 @@ def LR_init(
     else:
         if quant_params.rand_svd:
             q = min(quant_params.rank*2,
-                    min(*lplr_q_info.W.shape))
+                    min(*caldera_info.W.shape))
             U, Sigma, V = torch.svd_lowrank(residual, q)
             Vh = V.T
         else:
@@ -414,33 +374,33 @@ def LR_init(
     return L, R
     
 def maybe_update_LR(
-    lplr_q_info: LPLRQInfo,
-    quant_params: ActivationAwareQuantParams,
+    caldera_info: CalderaDecomposition,
+    quant_params: CalderaParams,
     W: torch.Tensor,
     H_sqrt: torch.Tensor,
     eigH,
     device
 ):
     if quant_params.compute_low_rank_factors:
-        residual = W - lplr_q_info.Q
-        update_LR(lplr_q_info, quant_params, residual, H_sqrt, eigH, device)
+        residual = W - caldera_info.Q
+        update_LR(caldera_info, quant_params, residual, H_sqrt, eigH, device)
 
 
 def update_LR(
-    lplr_q_info: LPLRQInfo,
-    quant_params: ActivationAwareQuantParams,
+    caldera_info: CalderaDecomposition,
+    quant_params: CalderaParams,
     residual: torch.Tensor,
     H_sqrt: torch.Tensor,
     eigH,
     device
 ):
     """
-    Run (potentially activation-aware) LPLR on (W - Q)
+    Run LPLR on the residual (W - Q)
     """
     data_aware = quant_params.activation_aware_LR
 
     # Initialization of L, R
-    L, R = LR_init(lplr_q_info, quant_params, H_sqrt, eigH, residual)
+    L, R = LR_init(caldera_info, quant_params, H_sqrt, eigH, residual)
 
     if quant_params.L_bits < 16 or quant_params.R_bits < 16:
         quant_info_L = get_quant_info(
@@ -455,17 +415,12 @@ def update_LR(
             bits=quant_params.R_bits,
             device=device
         )
-
-        debug_metadata = {"quant_error_L": [],
-                            "relative_error_L": [],
-                            "quant_error_R": [],
-                            "relative_error_R": []}
         
         best_L, best_R = L, R
         best_L_quant_out, best_R_quant_out = None, None
         best_error = float('inf')
 
-        for it in range(quant_params.lplr_iters):
+        for _ in range(quant_params.lplr_iters):
             # L
             if data_aware:
                 L = torch.linalg.lstsq((R @ H_sqrt).T, (residual @ H_sqrt).T)[0].T
@@ -476,76 +431,31 @@ def update_LR(
                 if torch.isnan(R).any():
                     L = residual @ torch.linalg.pinv(R)
 
-            if quant_params.hadamard_transform_L and it == 0:
-                rand = torch.normal(torch.zeros(L.shape[1])).to(device)
-                rademachers = torch.diag((rand > 0).float() - (rand <= 0).float())
-
-                L_had = matmul_hadU(L @ rademachers)
-                L = L_had
-                quant_out_L = quantize_matrix(L.T, quant_params, quant_info_L)
-                L_hat = quant_out_L.A_hat.T
-            elif quant_params.Haar_transform_L and it == 0:
-                k = L.shape[1]
-                S = torch.normal(
-                    mean=torch.zeros(k, k)).to(device)
-                US, _, VSh = torch.linalg.svd(S)
-                S = US @ VSh
-                L = L @ S
-                quant_out_L = quantize_matrix(L.T, quant_params, quant_info_L)
-                L_hat = quant_out_L.A_hat.T
-            else:
-                quant_out_L = quantize_matrix(L.T, quant_params, quant_info_L)
-                L_hat = quant_out_L.A_hat.T
+            quant_out_L = quantize_matrix(L.T, quant_params, quant_info_L)
+            L = quant_out_L.A_hat.T
             
-            debug_metadata["quant_error_L"].append(
-                torch.linalg.matrix_norm(L - L_hat).item())
-            debug_metadata["relative_error_L"].append(
-                torch.linalg.matrix_norm(L - L_hat).item() /
-                torch.linalg.matrix_norm(L).item())
-            L = L_hat
-
             # R
             R = torch.linalg.lstsq(L, residual)[0]
             if torch.isnan(R).any():
                 R = torch.linalg.pinv(L) @ residual
 
-            if quant_params.hadamard_transform_R and it == 0:
-                rand = torch.normal(torch.zeros(R.shape[1])).to(device)
-                rademachers = torch.diag((rand > 0).float() - (rand <= 0).float())
-                R_had = matmul_hadUt(R @ rademachers)
-                quant_out_R = quantize_matrix(R_had, quant_params,quant_info_R)
-                R_hat = quant_out_R.A_hat
-                R_hat = matmul_hadU(R_hat) @ rademachers
-            else:
-                quant_out_R = quantize_matrix(R, quant_params, quant_info_R)
-                R_hat = quant_out_R.A_hat
+            quant_out_R = quantize_matrix(R, quant_params, quant_info_R)
+            R = quant_out_R.A_hat
 
-                
-            debug_metadata["quant_error_R"].append(
-                torch.linalg.matrix_norm(R - R_hat).item())
-            debug_metadata["relative_error_R"].append(
-                torch.linalg.matrix_norm(R - R_hat).item() /
-                torch.linalg.matrix_norm(R).item())
-            R = R_hat
-
-            error = torch.linalg.matrix_norm((residual - L @ R) @ H_sqrt)
+            error = torch.linalg.matrix_norm((residual - L @ R) @ H_sqrt) / \
+                     torch.linalg.matrix_norm((residual + caldera_info.Q) @ H_sqrt)
             if error < best_error:
                 best_L, best_R = L, R
                 best_L_quant_out = quant_out_L
                 best_R_quant_out = quant_out_R
                 best_error = error
 
-        lplr_q_info.L_idxs = best_L_quant_out.A_idxs
-        lplr_q_info.R_idxs = best_R_quant_out.A_idxs
-        lplr_q_info.L_scale = best_L_quant_out.scale
-        lplr_q_info.R_scale = best_R_quant_out.scale
+        caldera_info.L_idxs = best_L_quant_out.A_idxs
+        caldera_info.R_idxs = best_R_quant_out.A_idxs
+        caldera_info.L_scale = best_L_quant_out.scale
+        caldera_info.R_scale = best_R_quant_out.scale
 
         L, R = best_L, best_R
 
-        if quant_params.verbose:
-            for key, arr in debug_metadata.items():
-                print(f"{key}: {[round(val, 4) for val in arr]}")
-            print("-"*60)
-
-    lplr_q_info.L = L
-    lplr_q_info.R = R
+    caldera_info.L = L
+    caldera_info.R = R

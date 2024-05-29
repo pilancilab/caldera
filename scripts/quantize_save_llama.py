@@ -1,7 +1,7 @@
-from lplr_llm.activation_aware.dataclasses import *
-from lplr_llm.utils.enums import TransformerSubLayers
-from lplr_llm.activation_aware.weight_compression import \
+from caldera.decomposition.dataclasses import *
+from caldera.decomposition.weight_compression import \
     ActivationAwareWeightCompressor
+from caldera.utils.enums import TransformerSubLayers
 import gc
 from transformers import AutoModelForCausalLM, HfArgumentParser, AutoModelForSequenceClassification
 import torch
@@ -9,6 +9,17 @@ import os
 import torch.multiprocessing as mp
 import glog
 from safetensors.torch import load_model
+
+
+SUBLAYER_TO_STRING = {
+    TransformerSubLayers.KEY: "Key Projection (attn)",
+    TransformerSubLayers.QUERY: "Query Projection (attn)",
+    TransformerSubLayers.VALUE: "Value Projection (attn)",
+    TransformerSubLayers.O: "O Projection (attn)",
+    TransformerSubLayers.GATE: "Gate Projection (mlp)",
+    TransformerSubLayers.UP: "Up Projection (mlp)",
+    TransformerSubLayers.DOWN: "Down Projection (mlp)"
+}
 
 
 @dataclass
@@ -19,6 +30,10 @@ class Arguments:
     model_save_path: str = field(metadata={
         "help": ("Path in which to save the quantized model.")
     })
+    base_model: str = field(metadata={
+        "help": ("Path of the model that is being quantized, as "
+                 "either a local or a Huggingface path")
+    })
     devices: list[str] = field(metadata={
         "help": ("List of devices to use for quantization, e.g. "
                  "\"cuda:0 cuda:1 cuda:2 cuda:3\"")
@@ -27,10 +42,6 @@ class Arguments:
         "help": ("Number of columns of L and rows of R, in the decomposition"
                  "W approx. Q + LR to finetune. The remaining columns will "
                  "remain fixed.")
-    })
-    base_model: str = field(default="meta-llama/Llama-2-7b-hf", metadata={
-        "help": ("Path of the model that is being quantized, as "
-                 "either a local or a Huggingface path")
     })
     token: str = field(default="", metadata={
         "help": "Huggingface token for private models."
@@ -62,7 +73,7 @@ def quant_layer(in_q, model_save_path, base_model, config, ft_rank, grad_ckpt, d
             layer = model.model.layers[layer_idx]
 
             for sublayer in layer_quant.sublayer_info.keys():
-                print(f"Quantizing layer {layer_idx}, sublayer {sublayer}")
+                print(f"Quantizing layer {layer_idx}, {SUBLAYER_TO_STRING[sublayer]}")
                 layer_quant.compress_sublayer(sublayer)
 
                 attr_names = layer_quant.sublayer_info[sublayer].out_key.split('.')
@@ -84,14 +95,14 @@ def quant_layer(in_q, model_save_path, base_model, config, ft_rank, grad_ckpt, d
 
 
 def quantize_save_llama(
-    base_model: str = "meta-llama/Llama-2-7b-hf",
-    hessian_save_path: str = "./hessians/llama-2-7b",
-    model_save_path: str = "./models/llama-2-7b",
+    base_model: str,
+    hessian_save_path: str,
+    model_save_path: str,
     token: str = "",
     ft_rank: int = 64,
     grad_ckpt: bool = True,
     data_params: DataParameters = DataParameters(),
-    quant_params: ActivationAwareQuantParams = ActivationAwareQuantParams(),
+    quant_params: CalderaParams = CalderaParams(),
     quant_devices=["cuda"]
 ):
 
@@ -143,24 +154,28 @@ def load_quantized_model(
     device,
     include_rht_finetuning=True,
     sequence_classification=False,
-    unquantize_LR=True
+    seq_class_num_labels=2
 ):
     if not sequence_classification:
         model = AutoModelForCausalLM.from_pretrained(
-                base_model, torch_dtype='auto', device_map=device, low_cpu_mem_usage=True
-        ).to(device)
+                base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True
+        ).cpu()
     else:
         model = AutoModelForSequenceClassification.from_pretrained(
-            base_model, torch_dtype='auto', device_map=device, low_cpu_mem_usage=True,
-        ).to(device)
+            base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True, num_labels=seq_class_num_labels
+        ).cpu()
     
     if not sequence_classification:\
         model.lm_head.weight.requires_grad = False
     else:
+        model.score =  model.score.to(device)
         model.score.weight.requires_grad = True
 
     model.model.embed_tokens.weight.requires_grad = False
+    model.model.embed_tokens = model.model.embed_tokens.to(device)
+
     model.model.norm.weight.requires_grad = False
+    model.model.norm = model.model.norm.to(device)
     for layer_idx in range(len(model.model.layers)):
         layer = torch.load(
             f"{model_save_path}/quant_layer_{layer_idx}.pt",
@@ -177,15 +192,6 @@ def load_quantized_model(
             if sublayer.ft_rank > 0:
                 sublayer.L_ft = torch.nn.Parameter(sublayer.L_ft.contiguous(), requires_grad=True)
                 sublayer.R_ft = torch.nn.Parameter(sublayer.R_ft.contiguous(), requires_grad=True)
-            if unquantize_LR and sublayer.L is not None:
-                if sublayer.quant_L:
-                    sublayer.L = torch.nn.Parameter(sublayer.L.get_W_decompressed().to(torch.bfloat16).T.contiguous(),
-                                                    requires_grad=False)
-                    sublayer.quant_L = False
-                if sublayer.quant_R:
-                    sublayer.R = torch.nn.Parameter(sublayer.R.get_W_decompressed().contiguous().to(torch.bfloat16),
-                                                    requires_grad=False)
-                    sublayer.quant_R = False
 
         model.model.layers[layer_idx] = layer
     
@@ -194,12 +200,13 @@ def load_quantized_model(
         load_model(model, model_save_path + "/RHT_ft_model.safetensors", strict=False)
 
     return model
-        
+
+
 if __name__ == '__main__':
     glog.setLevel("WARN")
 
     parser = HfArgumentParser([
-        Arguments, ActivationAwareQuantParams, QuIPArgs])
+        Arguments, CalderaParams, QuIPArgs])
 
     args, quant_params, quip_args = parser.parse_args_into_dataclasses()
     quant_params.quip_args = quip_args

@@ -8,6 +8,7 @@ from dataclasses import field, dataclass
 import transformers
 import glob
 
+# Adapted from https://github.com/Cornell-RelaxML/quip-sharp
 
 class LMEvalAdaptorWithDevice(LMEvalAdaptor):
     def __init__(self,
@@ -59,7 +60,7 @@ class Arguments:
     })
 
 
-def test_zero_shot(args: Arguments):
+def eval_zero_shot(args: Arguments):
     model = load_quantized_model(args.model_save_path, args.base_model, args.device,
                                  include_rht_finetuning=not args.ignore_rht_finetuning)
     model = model.to(args.device)
@@ -98,4 +99,4 @@ def test_zero_shot(args: Arguments):
 if __name__ == "__main__":
     parser = transformers.HfArgumentParser([Arguments])
     args = parser.parse_args_into_dataclasses()[0]
-    test_zero_shot(args)
+    eval_zero_shot(args)

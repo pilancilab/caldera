@@ -5,9 +5,9 @@ import torch
 import matplotlib.pyplot as plt
 import gc
 
-from lplr_llm.activation_aware.dataclasses import *
-from lplr_llm.utils.enums import TransformerSubLayers
-from lplr_llm.activation_aware.lplr_q import LPLRq
+from caldera.decomposition.dataclasses import *
+from caldera.utils.enums import TransformerSubLayers
+from caldera.decomposition.alg import caldera
 
 from dataclasses import asdict
 import json
@@ -63,7 +63,7 @@ class ActivationAwareLayerQuant:
     # Instantiate ActivationAwareLayerQuant for a layer
     layer_quant = weight_compressor.get_layer_quantizer(layer_idx=12)
 
-    # Quantize one sub-layer using QuIP + LPLR
+    # Quantize one sub-layer using CALDERA
     layer_quant.compress_sublayer(TransformerSubLayers.VALUE)
 
     # Plot the quantization error
@@ -80,15 +80,15 @@ class ActivationAwareLayerQuant:
         layer: torch.nn.Module,
         layer_idx: int,
         hessian_save_path: str = "",
-        quant_params: ActivationAwareQuantParams = ActivationAwareQuantParams(),
-        label: str = "LPLR-LDLQ",
+        quant_params: CalderaParams = CalderaParams(),
+        label: str = "CALDERA",
         device: str = "cuda",
     ):
         self.hessian_save_path = hessian_save_path
         self.layer = layer.to(device)
         self.label = label
         if label is None:
-            self.label = "LPLR-LDLQ"
+            self.label = "CALDERA"
 
         self.layer_idx = layer_idx
         self.quant_params = quant_params
@@ -108,7 +108,7 @@ class ActivationAwareLayerQuant:
     def compress_sublayer(self, sublayer):
         """
         Decomposes a sublayer (e.g., query, key, value, etc.) by alternating
-        between QuIP# and LPLR.
+        between LDLQ and LPLR.
 
         The sublayer argument must be a member of the TransformerSubLayers
         enum.
@@ -119,17 +119,16 @@ class ActivationAwareLayerQuant:
         sublayer_info = self.sublayer_info[sublayer]
         sublayer_info.started_quant = True
 
-        sublayer_info.lplr_q.W = sublayer_info.sublayer.weight.to(self.device).float()
+        sublayer_info.caldera.W = sublayer_info.sublayer.weight.to(self.device).float()
         
-
-        W = sublayer_info.lplr_q.W
+        W = sublayer_info.caldera.W
         H = self._get_H(sublayer)
 
-        sublayer_info.lplr_q = LPLRq(self.quant_params, W, H, self.device)
+        sublayer_info.caldera = caldera(self.quant_params, W, H, self.device)
 
     def get_quantized_linear_layer(self, sublayer, ft_rank, grad_ckpt=True):
-        from lplr_llm.activation_aware.quantized_layer import \
-            LPLRQuantizedLinear
+        from caldera.decomposition.quantized_layer import \
+            CalderaQuantizedLinear
 
         sublayer_info = self._get_sublayer_info_and_check_sublayer(sublayer)
 
@@ -150,33 +149,33 @@ class ActivationAwareLayerQuant:
                 "Only lattice quantization for L and R implemented so far"
             )
 
-        return LPLRQuantizedLinear(
+        return CalderaQuantizedLinear(
             # Dimensions
-            in_features=sublayer_info.lplr_q.W.shape[1],
-            out_features=sublayer_info.lplr_q.W.shape[0],
+            in_features=sublayer_info.caldera.W.shape[1],
+            out_features=sublayer_info.caldera.W.shape[0],
             # Codebooks
             Q_codebook_version=BITS_TO_CODEBOOK[self.quant_params.Q_bits],
             L_codebook_version=L_codebook_version,
             R_codebook_version=R_codebook_version,
             # L and R
-            L=sublayer_info.lplr_q.L,
-            R=sublayer_info.lplr_q.R,
+            L=sublayer_info.caldera.L,
+            R=sublayer_info.caldera.R,
             # Quantized idxs
-            L_idxs=sublayer_info.lplr_q.L_idxs,
-            R_idxs=sublayer_info.lplr_q.R_idxs,
-            Q_idxs=sublayer_info.lplr_q.Q_idxs,
+            L_idxs=sublayer_info.caldera.L_idxs,
+            R_idxs=sublayer_info.caldera.R_idxs,
+            Q_idxs=sublayer_info.caldera.Q_idxs,
             # Scaling
-            L_scale=sublayer_info.lplr_q.L_scale,
-            R_scale=sublayer_info.lplr_q.R_scale,
-            Q_scale=sublayer_info.lplr_q.Q_scale,
-            global_scale=sublayer_info.lplr_q.global_scale,
-            scaleWH=sublayer_info.lplr_q.scaleWH,
+            L_scale=sublayer_info.caldera.L_scale,
+            R_scale=sublayer_info.caldera.R_scale,
+            Q_scale=sublayer_info.caldera.Q_scale,
+            global_scale=sublayer_info.caldera.global_scale,
+            scaleWH=sublayer_info.caldera.scaleWH,
             # Hadamard
             hadamard=(self.quant_params.hadamard_transform
                       or self.quant_params.full_quip_sharp),
             # SU and SV
-            SU=sublayer_info.lplr_q.SU,
-            SV=sublayer_info.lplr_q.SV,
+            SU=sublayer_info.caldera.SU,
+            SV=sublayer_info.caldera.SV,
             # Rank and fine-tuning
             rank=max(self.quant_params.rank,
                      self.quant_params.quip_args.lora_rank),
@@ -190,7 +189,7 @@ class ActivationAwareLayerQuant:
         (i.e., a member of the TransformerSubLayers enum).
         """
         sublayer_info = self._get_sublayer_info_and_check_sublayer(sublayer)
-        self._plot(sublayer_info.lplr_q.errors, plot_first_iter, savefile=savefile)
+        self._plot(sublayer_info.caldera.errors, plot_first_iter, savefile=savefile)
 
     def _plot(self, errors, plot_first_iter, savefile=None):
         COLORS = ['b', 'r', 'm']
@@ -226,8 +225,8 @@ class ActivationAwareLayerQuant:
         """
         sublayer_info = self._get_sublayer_info_and_check_sublayer(sublayer)
         min_error = float('inf')
-        for key in sublayer_info.lplr_q.errors:
-            min_error = min(min_error, min(sublayer_info.lplr_q.errors[key]))
+        for key in sublayer_info.caldera.errors:
+            min_error = min(min_error, min(sublayer_info.caldera.errors[key]))
         return min_error
 
     def export_errors_json(self, sublayer, savefile):
@@ -239,7 +238,7 @@ class ActivationAwareLayerQuant:
         now = datetime.datetime.now()
 
         data = {
-            "per_iter_errors": sublayer_info.lplr_q.errors,
+            "per_iter_errors": sublayer_info.caldera.errors,
             "layer_idx": self.layer_idx,
             "sublayer": sublayer_info.key,
             "datetime": str(now),

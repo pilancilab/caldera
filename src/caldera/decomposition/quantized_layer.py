@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
-from dataclasses import dataclass, field
 
 from lib import codebook
-from lib.utils import clean, dtype_from_str, get_hadK
-from lib.linear import QuantizedLinear
+from lib.utils import get_hadK
 
 import quiptools_cuda
 from lib.utils.matmul_had import matmul_hadU_cuda, matmul_hadUt_cuda
+
+
+# Adapted from https://github.com/Cornell-RelaxML/quip-sharp
 
 
 class LatticeQuantizedParameter(nn.Module):
@@ -62,7 +63,16 @@ class LatticeQuantizedParameter(nn.Module):
                         ) / resid_scale) * self.scale
             
         else:
-            raise NotImplementedError
+            W_decompressed = quiptools_cuda.decompress_packed_e8p(
+                    self.idxs_list[0].view(m // 16, n // 64, 8, 4),
+                    self.codebook.grid_packed_abs)
+
+            W_resid_decompressed = torch.zeros(
+                self.idxs_list[1].shape[0],
+                64 * self.idxs_list[1].shape[-1],
+                device=self.idxs_list[1].device, dtype=torch.float16
+            )
+            return (W_decompressed + W_resid_decompressed / resid_scale) * self.scale
 
     def forward(self, x, float_precision=False):
         dtype = x.dtype
@@ -163,7 +173,7 @@ class LatticeQuantizedParameter(nn.Module):
         return x.to(dtype)
 
 
-class LPLRQuantizedLinear(nn.Module):
+class CalderaQuantizedLinear(nn.Module):
 
     def __init__(
         self,
@@ -183,7 +193,7 @@ class LPLRQuantizedLinear(nn.Module):
         ft_rank=64,
         grad_ckpt=True
     ):
-        super(LPLRQuantizedLinear, self).__init__()
+        super(CalderaQuantizedLinear, self).__init__()
 
         self.rank = rank
         self.ft_rank = ft_rank
@@ -197,13 +207,16 @@ class LPLRQuantizedLinear(nn.Module):
         if self.scaleWH is not None:
             self.scaleWH = nn.Parameter(self.scaleWH, requires_grad=False)
 
-        self.Q = LatticeQuantizedParameter(
-            in_features=in_features,
-            out_features=out_features,
-            idxs=Q_idxs,
-            scale=Q_scale,
-            codebook_version=Q_codebook_version
-        )
+        if Q_idxs is not None:
+            self.Q = LatticeQuantizedParameter(
+                in_features=in_features,
+                out_features=out_features,
+                idxs=Q_idxs,
+                scale=Q_scale,
+                codebook_version=Q_codebook_version
+            )
+        else:
+            self.Q = None
     
         self.L_idxs = L_idxs
         self.R_idxs = R_idxs
@@ -267,16 +280,12 @@ class LPLRQuantizedLinear(nn.Module):
             self.L = None
             self.R = None
 
-    def forward(self, input):
-        # TODO: implement checkpoint
-        return self.no_ckpt_forward(input)
 
-    def no_ckpt_forward(self, x):
+    def forward(self, x):
         old_dtype = x.dtype
         shape = x.shape
         n, m = len(self.SU), len(self.SV)
         x = x.bfloat16().view(-1, n)
-        # x = x.float().view(-1, n)
         # Preprocessing
         x = x * self.SU 
         if self.scaleWH is not None:
@@ -285,7 +294,10 @@ class LPLRQuantizedLinear(nn.Module):
             x = matmul_hadUt_cuda(x, self.had_left, self.K_left)
 
         # Apply Q
-        output_no_ft = self.Q.forward(x)
+        if self.Q is not None:
+            output_no_ft = self.Q.forward(x)
+        else:
+            output_no_ft = torch.zeros(x.shape[0], m).to(torch.bfloat16).to(x.device)
 
         # Apply quantized L and R
         if self.L is not None:

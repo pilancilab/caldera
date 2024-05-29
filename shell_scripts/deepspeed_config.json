@@ -12,7 +12,7 @@
         }
     },
     "bf16": {
-        "enabled": "auto",
+        "enabled": true,
         "auto_cast": true
     },
     "train_micro_batch_size_per_gpu": "auto",
