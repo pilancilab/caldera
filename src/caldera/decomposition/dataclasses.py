@@ -83,8 +83,8 @@ class QuIPArgs:
     full_svd: bool = field(default=False)
     use_fp64: bool = False
     lowmem_ldlq: bool = field(default=False)
-    scale_override: float = field(default=-1)
-    resid_scale_override: float = field(default=-1)
+    scale_override: float = field(default=0.9)
+    resid_scale_override: float = field(default=0.9)
     no_use_buffered: bool = field(default=False)
     sigma_reg: float = field(default=1e-2)
     sigma_reg2: float = field(default=1e-2)
