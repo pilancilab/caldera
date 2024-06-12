@@ -272,6 +272,7 @@ def update_Q_data_aware(
         if min_eigval < 0:
             H = H + min_eigval.abs() * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
         alpha = torch.diag(H).mean().abs() * quant_params.quip_args.sigma_reg2
+        print(alpha, min_eigval.abs())
         H = H + alpha * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
 
     if quant_params.full_quip_sharp:
