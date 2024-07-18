@@ -177,10 +177,16 @@ def load_quantized_model(
     model.model.norm.weight.requires_grad = False
     model.model.norm = model.model.norm.to(device)
     for layer_idx in range(len(model.model.layers)):
-        layer = torch.load(
-            f"{model_save_path}/quant_layer_{layer_idx}.pt",
-            map_location=device
-        )
+        try:
+            layer = torch.load(
+                f"{model_save_path}/quant_layer_{layer_idx}.pt",
+                map_location=device
+            )
+        except RuntimeError as e:
+            print(e.args)
+            print(f"ERROR: Cannot load layer {layer_idx}")
+            raise e
+        
         layer.post_attention_layernorm.weight.requires_grad = False
         layer.input_layernorm.weight.requires_grad = False
 
