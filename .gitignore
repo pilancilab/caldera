@@ -9,3 +9,4 @@ naomi/results
 artifacts/
 .vscode
 shell_scripts/custom
+wandb
