@@ -54,11 +54,11 @@ def caldera(
         eigH = torch.linalg.eigh(H)
 
         eigvals = eigH.eigenvalues
-        if eigvals.min() < quant_params.quip_args.sigma_reg:
-            H = H + (quant_params.quip_args.sigma_reg - eigvals.min()) * \
-                    torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
-            eigvals += quant_params.quip_args.sigma_reg - eigvals.min()
-            eigH = EigTuple(eigvals, eigH.eigenvectors)
+        # if eigvals.min() < quant_params.quip_args.sigma_reg:
+        #     H = H + (quant_params.quip_args.sigma_reg - eigvals.min()) * \
+        #             torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
+        #     eigvals += quant_params.quip_args.sigma_reg - eigvals.min()
+        #     eigH = EigTuple(eigvals, eigH.eigenvectors)
             
         H_sqrt = (eigH.eigenvectors @
                     torch.diag(torch.sqrt(eigvals)) @
@@ -269,9 +269,8 @@ def update_Q_data_aware(
 
         H = H - (M @ V @ V.T @ M.T).to(H.dtype)
         min_eigval = torch.linalg.eigh(H).eigenvalues.min()
-        if min_eigval < 0:
-            H = H + min_eigval.abs() * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
-        alpha = torch.diag(H).mean().abs() * quant_params.quip_args.sigma_reg2
+        H = H + min_eigval.abs() * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
+        alpha = torch.diag(H).mean() * quant_params.quip_args.sigma_reg2
         H = H + alpha * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
 
     if quant_params.full_quip_sharp:
@@ -442,8 +441,8 @@ def update_LR(
             quant_out_R = quantize_matrix(R, quant_params, quant_info_R)
             R = quant_out_R.A_hat
 
-            error = torch.linalg.matrix_norm((residual - L @ R) @ H_sqrt) / \
-                     torch.linalg.matrix_norm((residual + caldera_info.Q) @ H_sqrt)
+            error = torch.linalg.matrix_norm((residual - L @ R) @ H_sqrt) #/ \
+                    #  torch.linalg.matrix_norm((residual + caldera_info.Q) @ H_sqrt)
             if error < best_error:
                 best_L, best_R = L, R
                 best_L_quant_out = quant_out_L
