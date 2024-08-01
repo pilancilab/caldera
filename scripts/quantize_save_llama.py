@@ -24,32 +24,54 @@ SUBLAYER_TO_STRING = {
 
 @dataclass
 class Arguments:
-    hessian_save_path: str = field(metadata={
-        "help": "Path in which the Hessians were stored"
-    })
-    model_save_path: str = field(metadata={
-        "help": ("Path in which to save the quantized model.")
-    })
-    base_model: str = field(metadata={
-        "help": ("Path of the model that is being quantized, as "
-                 "either a local or a Huggingface path")
-    })
-    devices: list[str] = field(metadata={
-        "help": ("List of devices to use for quantization, e.g. "
-                 "\"cuda:0 cuda:1 cuda:2 cuda:3\"")
-    })
-    ft_rank: int = field(default=64, metadata={
-        "help": ("Number of columns of L and rows of R, in the decomposition"
-                 "W approx. Q + LR to finetune. The remaining columns will "
-                 "remain fixed.")
-    })
-    token: str = field(default="", metadata={
-        "help": "Huggingface token for private models."
-    })
+    hessian_save_path: str = field(
+        metadata={"help": "Path in which the Hessians were stored"}
+    )
+    model_save_path: str = field(
+        metadata={"help": ("Path in which to save the quantized model.")}
+    )
+    base_model: str = field(
+        metadata={
+            "help": (
+                "Path of the model that is being quantized, as "
+                "either a local or a Huggingface path"
+            )
+        }
+    )
+    devices: list[str] = field(
+        metadata={
+            "help": (
+                "List of devices to use for quantization, e.g. "
+                '"cuda:0 cuda:1 cuda:2 cuda:3"'
+            )
+        }
+    )
+    ft_rank: int = field(
+        default=64,
+        metadata={
+            "help": (
+                "Number of columns of L and rows of R, in the decomposition"
+                "W approx. Q + LR to finetune. The remaining columns will "
+                "remain fixed."
+            )
+        },
+    )
+    token: str = field(
+        default="", metadata={"help": "Huggingface token for private models."}
+    )
+    start_layer: int = field(
+        default=0,
+        metadata={
+            "help": "Layer index to start quantizing from (to resume quantization from an interrupt)"
+        },
+    )
+    stop_layer: int = field(
+        default=int(sys.maxsize),
+        metadata={
+            "help": "Layer index to stop quantizing at (to resume quantization from an interrupt)"
+        },
+    )
 
-
-def quant_layer(in_q, model_save_path, base_model, config, ft_rank, grad_ckpt, device,
-                data_params, quant_params, hessian_save_path):
     model = AutoModelForCausalLM.from_pretrained(
         base_model, torch_dtype='auto', low_cpu_mem_usage=True
     ).cpu()
@@ -103,9 +125,10 @@ def quantize_save_llama(
     grad_ckpt: bool = True,
     data_params: DataParameters = DataParameters(),
     quant_params: CalderaParams = CalderaParams(),
-    quant_devices=["cuda"]
+    quant_devices=["cuda"],
+    start_layer=0,
+    stop_layer=int(sys.maxsize),
 ):
-
     os.makedirs(model_save_path, exist_ok=True)
     mp.set_start_method('spawn')
 
@@ -138,7 +161,8 @@ def quantize_save_llama(
         p.start()
         quant_procs.append(p)
 
-    for layer_idx in range(n_layers):
+    stop_layer: int = min(stop_layer, n_layers)
+    for layer_idx in range(start_layer, stop_layer):
         in_q.put(layer_idx)
 
     for _ in quant_devices:
@@ -225,5 +249,7 @@ if __name__ == '__main__':
         grad_ckpt=False,
         data_params=DataParameters(),
         quant_params=quant_params,
-        quant_devices=args.devices
+        quant_devices=args.devices,
+        start_layer=args.start_layer,
+        stop_layer=args.stop_layer,
     )
