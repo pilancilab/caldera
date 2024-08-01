@@ -1,9 +1,13 @@
+import sys
 from caldera.decomposition.dataclasses import *
-from caldera.decomposition.weight_compression import \
-    ActivationAwareWeightCompressor
+from caldera.decomposition.weight_compression import ActivationAwareWeightCompressor
 from caldera.utils.enums import TransformerSubLayers
 import gc
-from transformers import AutoModelForCausalLM, HfArgumentParser, AutoModelForSequenceClassification
+from transformers import (
+    AutoModelForCausalLM,
+    HfArgumentParser,
+    AutoModelForSequenceClassification,
+)
 import torch
 import os
 import torch.multiprocessing as mp
@@ -18,7 +22,7 @@ SUBLAYER_TO_STRING = {
     TransformerSubLayers.O: "O Projection (attn)",
     TransformerSubLayers.GATE: "Gate Projection (mlp)",
     TransformerSubLayers.UP: "Up Projection (mlp)",
-    TransformerSubLayers.DOWN: "Down Projection (mlp)"
+    TransformerSubLayers.DOWN: "Down Projection (mlp)",
 }
 
 
@@ -72,8 +76,21 @@ class Arguments:
         },
     )
 
+
+def quant_layer(
+    in_q,
+    model_save_path,
+    base_model,
+    config,
+    ft_rank,
+    grad_ckpt,
+    device,
+    data_params,
+    quant_params,
+    hessian_save_path,
+):
     model = AutoModelForCausalLM.from_pretrained(
-        base_model, torch_dtype='auto', low_cpu_mem_usage=True
+        base_model, torch_dtype="auto", low_cpu_mem_usage=True
     ).cpu()
 
     while True:
@@ -81,13 +98,13 @@ class Arguments:
 
         if layer_idx is None:
             return
-        
+
         weight_compressor = ActivationAwareWeightCompressor(
             model_params=ModelParameters(base_model),
             data_params=data_params,
             hessian_save_path=hessian_save_path,
             quant_params=quant_params,
-            compute_hessians=False
+            compute_hessians=False,
         )
         layer_quant = weight_compressor.get_layer_quantizer(layer_idx, device)
 
@@ -98,19 +115,17 @@ class Arguments:
                 print(f"Quantizing layer {layer_idx}, {SUBLAYER_TO_STRING[sublayer]}")
                 layer_quant.compress_sublayer(sublayer)
 
-                attr_names = layer_quant.sublayer_info[sublayer].out_key.split('.')
+                attr_names = layer_quant.sublayer_info[sublayer].out_key.split(".")
                 setattr(
-                    getattr(layer, attr_names[0]), attr_names[1],
+                    getattr(layer, attr_names[0]),
+                    attr_names[1],
                     layer_quant.get_quantized_linear_layer(
                         sublayer, ft_rank, grad_ckpt
-                    )
+                    ),
                 )
                 layer_quant.clean_up_sublayer(sublayer)
             layer = layer.cpu()
-            torch.save(
-                layer,
-                f"{model_save_path}/quant_layer_{layer_idx}.pt"
-            )
+            torch.save(layer, f"{model_save_path}/quant_layer_{layer_idx}.pt")
             del layer_quant
             gc.collect()
             torch.cuda.empty_cache()
@@ -130,15 +145,15 @@ def quantize_save_llama(
     stop_layer=int(sys.maxsize),
 ):
     os.makedirs(model_save_path, exist_ok=True)
-    mp.set_start_method('spawn')
+    mp.set_start_method("spawn")
 
     if token:
         model = AutoModelForCausalLM.from_pretrained(
-            base_model, torch_dtype='auto', low_cpu_mem_usage=True, token=token
+            base_model, torch_dtype="auto", low_cpu_mem_usage=True, token=token
         ).cpu()
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            base_model, torch_dtype='auto', low_cpu_mem_usage=True
+            base_model, torch_dtype="auto", low_cpu_mem_usage=True
         ).cpu()
 
     model_config = model.config
@@ -147,16 +162,25 @@ def quantize_save_llama(
     gc.collect()
     torch.cuda.empty_cache()
 
-    manager = mp.get_context('spawn').Manager()
+    manager = mp.get_context("spawn").Manager()
     in_q = manager.Queue()
     quant_procs = []
 
     for device in quant_devices:
         p = mp.Process(
             target=quant_layer,
-            args=(in_q, model_save_path, base_model, 
-                  model_config, ft_rank, grad_ckpt, device,
-                  data_params, quant_params, hessian_save_path)
+            args=(
+                in_q,
+                model_save_path,
+                base_model,
+                model_config,
+                ft_rank,
+                grad_ckpt,
+                device,
+                data_params,
+                quant_params,
+                hessian_save_path,
+            ),
         )
         p.start()
         quant_procs.append(p)
@@ -178,65 +202,80 @@ def load_quantized_model(
     device,
     include_rht_finetuning=True,
     sequence_classification=False,
-    seq_class_num_labels=2
+    seq_class_num_labels=2,
 ):
     if not sequence_classification:
         model = AutoModelForCausalLM.from_pretrained(
-                base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True
-        ).cpu()
+            base_model, torch_dtype="auto", device_map="auto", low_cpu_mem_usage=True
+        )
     else:
         model = AutoModelForSequenceClassification.from_pretrained(
-            base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True, num_labels=seq_class_num_labels
-        ).cpu()
-    
-    if not sequence_classification:\
+            base_model,
+            torch_dtype="auto",
+            device_map="auto",
+            low_cpu_mem_usage=True,
+            num_labels=seq_class_num_labels,
+        )
+
+    if not sequence_classification:
         model.lm_head.weight.requires_grad = False
     else:
-        model.score =  model.score.to(device)
+        # model.score =  model.score.to(device)
         model.score.weight.requires_grad = True
 
     model.model.embed_tokens.weight.requires_grad = False
-    model.model.embed_tokens = model.model.embed_tokens.to(device)
+    # model.model.embed_tokens = model.model.embed_tokens.to(device)
 
     model.model.norm.weight.requires_grad = False
-    model.model.norm = model.model.norm.to(device)
+    # model.model.norm = model.model.norm.to(device)
     for layer_idx in range(len(model.model.layers)):
         try:
             layer = torch.load(
                 f"{model_save_path}/quant_layer_{layer_idx}.pt",
-                map_location=device
+                map_location=next(
+                    p.device for p in model.model.layers[layer_idx].parameters()
+                ),
             )
         except RuntimeError as e:
             print(e.args)
             print(f"ERROR: Cannot load layer {layer_idx}")
             raise e
-        
+
         layer.post_attention_layernorm.weight.requires_grad = False
         layer.input_layernorm.weight.requires_grad = False
 
         for sublayer in [
-            layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj,
-            layer.self_attn.o_proj, layer.mlp.gate_proj, layer.mlp.up_proj,
-            layer.mlp.down_proj
+            layer.self_attn.q_proj,
+            layer.self_attn.k_proj,
+            layer.self_attn.v_proj,
+            layer.self_attn.o_proj,
+            layer.mlp.gate_proj,
+            layer.mlp.up_proj,
+            layer.mlp.down_proj,
         ]:
             if sublayer.ft_rank > 0:
-                sublayer.L_ft = torch.nn.Parameter(sublayer.L_ft.contiguous(), requires_grad=True)
-                sublayer.R_ft = torch.nn.Parameter(sublayer.R_ft.contiguous(), requires_grad=True)
+                sublayer.L_ft = torch.nn.Parameter(
+                    sublayer.L_ft.contiguous(), requires_grad=True
+                )
+                sublayer.R_ft = torch.nn.Parameter(
+                    sublayer.R_ft.contiguous(), requires_grad=True
+                )
 
         model.model.layers[layer_idx] = layer
-    
-    if include_rht_finetuning and os.path.isfile(model_save_path + "/RHT_ft_model.safetensors"):
+
+    if include_rht_finetuning and os.path.isfile(
+        model_save_path + "/RHT_ft_model.safetensors"
+    ):
         print("Loading RHT_ft_model.safetensors")
         load_model(model, model_save_path + "/RHT_ft_model.safetensors", strict=False)
 
     return model
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     glog.setLevel("WARN")
 
-    parser = HfArgumentParser([
-        Arguments, CalderaParams, QuIPArgs])
+    parser = HfArgumentParser([Arguments, CalderaParams, QuIPArgs])
 
     args, quant_params, quip_args = parser.parse_args_into_dataclasses()
     quant_params.quip_args = quip_args
