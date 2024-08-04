@@ -3,12 +3,14 @@ from caldera.decomposition.weight_compression import \
     ActivationAwareWeightCompressor
 from caldera.utils.enums import TransformerSubLayers
 import gc
-from transformers import AutoModelForCausalLM, HfArgumentParser, AutoModelForSequenceClassification
+from transformers import AutoModelForCausalLM, HfArgumentParser, AutoModelForSequenceClassification, LlamaForCausalLM
 import torch
 import os
 import torch.multiprocessing as mp
 import glog
 from safetensors.torch import load_model
+from lib.utils import graph_wrapper
+
 
 
 SUBLAYER_TO_STRING = {
@@ -148,6 +150,59 @@ def quantize_save_llama(
         p.join()
 
 
+# def load_quantized_model(
+#     model_save_path,
+#     base_model,
+#     device,
+#     include_rht_finetuning=True,
+#     sequence_classification=False,
+#     seq_class_num_labels=2
+# ):
+#     if not sequence_classification:
+#         model = AutoModelForCausalLM.from_pretrained(
+#                 base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True
+#         ).cpu()
+#     else:
+#         model = AutoModelForSequenceClassification.from_pretrained(
+#             base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True, num_labels=seq_class_num_labels
+#         ).cpu()
+    
+#     if not sequence_classification:\
+#         model.lm_head.weight.requires_grad = False
+#     else:
+#         model.score =  model.score.to(device)
+#         model.score.weight.requires_grad = True
+
+#     model.model.embed_tokens.weight.requires_grad = False
+#     model.model.embed_tokens = model.model.embed_tokens.to(device)
+
+#     model.model.norm.weight.requires_grad = False
+#     model.model.norm = model.model.norm.to(device)
+#     for layer_idx in range(len(model.model.layers)):
+#         layer = torch.load(
+#             f"{model_save_path}/quant_layer_{layer_idx}.pt",
+#             map_location=device
+#         )
+#         layer.post_attention_layernorm.weight.requires_grad = False
+#         layer.input_layernorm.weight.requires_grad = False
+
+#         for sublayer in [
+#             layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj,
+#             layer.self_attn.o_proj, layer.mlp.gate_proj, layer.mlp.up_proj,
+#             layer.mlp.down_proj
+#         ]:
+#             if sublayer.ft_rank > 0:
+#                 sublayer.L_ft = torch.nn.Parameter(sublayer.L_ft.contiguous(), requires_grad=True)
+#                 sublayer.R_ft = torch.nn.Parameter(sublayer.R_ft.contiguous(), requires_grad=True)
+
+#         model.model.layers[layer_idx] = layer
+    
+#     if include_rht_finetuning and os.path.isfile(model_save_path + "/RHT_ft_model.safetensors"):
+#         print("Loading RHT_ft_model.safetensors")
+#         load_model(model, model_save_path + "/RHT_ft_model.safetensors", strict=False)
+
+#     return model
+
 def load_quantized_model(
     model_save_path,
     base_model,
@@ -156,20 +211,12 @@ def load_quantized_model(
     sequence_classification=False,
     seq_class_num_labels=2
 ):
-    if not sequence_classification:
-        model = AutoModelForCausalLM.from_pretrained(
-                base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True
-        ).cpu()
-    else:
-        model = AutoModelForSequenceClassification.from_pretrained(
-            base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True, num_labels=seq_class_num_labels
-        ).cpu()
+    model = graph_wrapper.get_graph_wrapper(LlamaForCausalLM, device=device).from_pretrained(
+            base_model, torch_dtype='auto', device_map=device, low_cpu_mem_usage=True,
+            use_flash_attention_2=True
+    )
     
-    if not sequence_classification:\
-        model.lm_head.weight.requires_grad = False
-    else:
-        model.score =  model.score.to(device)
-        model.score.weight.requires_grad = True
+    model.lm_head.weight.requires_grad = False
 
     model.model.embed_tokens.weight.requires_grad = False
     model.model.embed_tokens = model.model.embed_tokens.to(device)

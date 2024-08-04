@@ -81,10 +81,10 @@ class LatticeQuantizedParameter(nn.Module):
         dtype = x.dtype
         n = self.in_features
         m = self.out_features
-        if not self.set_idxs_device:
-            self.set_idxs_device = True
-            self.idxs_list[0] = self.idxs_list[0].to(x.device)
-            self.codebook = self.codebook.to(x.device)
+        # if not self.set_idxs_device:
+        #     self.set_idxs_device = True
+        #     self.idxs_list[0] = self.idxs_list[0].to(x.device)
+        #     self.codebook = self.codebook.to(x.device)
         x = x / self.pre_scale
         if not float_precision:
             x = x.half()
@@ -96,7 +96,7 @@ class LatticeQuantizedParameter(nn.Module):
                 x = quiptools_cuda.decode_matvec_e8p(
                     x[0].to(torch.float16),
                     self.idxs_list[0].view(m // 16, n // 64, 8, 4),
-                    self.codebook.grid_packed_abs)
+                    self.codebook.grid_packed_abs).unsqueeze(0)
             else:
                 W_decompressed = quiptools_cuda.decompress_packed_e8p(
                     self.idxs_list[0].view(m // 16, n // 64, 8, 4),
@@ -125,6 +125,7 @@ class LatticeQuantizedParameter(nn.Module):
                 x = quiptools_cuda.decode_matvec_e8p(
                     x16[0], self.idxs_list[0].view(m // 16, n // 64, 8, 4),
                     self.codebook.grid_packed_abs) + z[0]
+                x = x.unsqueeze(0)
 
             else:
                 W_decompressed = quiptools_cuda.decompress_packed_e8p(
@@ -143,8 +144,8 @@ class LatticeQuantizedParameter(nn.Module):
                 )
 
                 if float_precision:
-                    W_decompressed = W_decompressed.float()                
-                    W_resid_decompressed = W_resid_decompressed.float()
+                    W_decompressed = W_decompressed.to(torch.bfloat16)            
+                    W_resid_decompressed = W_resid_decompressed.to(torch.bfloat16)
 
                 if self.transposed:
                     x = (x @ (W_decompressed +
@@ -162,7 +163,7 @@ class LatticeQuantizedParameter(nn.Module):
                      quiptools_cuda.decode_matvec_e8p(
                          x16 / resid_scale, self.idxs_list[1].view(
                              m // 16, n // 64, 8, 4),
-                         self.codebook.grid_packed_abs))
+                         self.codebook.grid_packed_abs)).unsqueeze(0)
             else:
                 W_decompressed = quiptools_cuda.decompress_packed_e8p(
                     self.idxs_list[0].view(m // 16, n // 64, 8, 4),
@@ -261,12 +262,11 @@ class CalderaQuantizedLinear(nn.Module):
         if self.rank > ft_rank:
             if self.L_codebook_version is not None:
                 self.L = LatticeQuantizedParameter(
-                    in_features=self.out_features,
-                    out_features=self.rank - ft_rank,
+                    out_features=self.out_features,
+                    in_features=self.rank - ft_rank,
                     idxs=self.L_idxs[ft_rank:, :],
                     scale=self.L_scale,
                     codebook_version=self.L_codebook_version,
-                    transposed=True
                 )
                 self.quant_L = True
             else:
@@ -292,31 +292,28 @@ class CalderaQuantizedLinear(nn.Module):
 
     def forward(self, x):
         old_dtype = x.dtype
+        x = x.float()
         shape = x.shape
         n, m = len(self.SU), len(self.SV)
-        x = x.float().view(-1, n)
+        x = x.view(-1, n)
         # Preprocessing
         if self.scaleWH is not None:
             x /= self.scaleWH
         x = x * self.SU 
-        if self.hadamard:
-            x = matmul_hadUt_cuda(x, self.had_left, self.K_left)
+        x = matmul_hadUt_cuda(x, self.had_left, self.K_left)
 
         # Apply Q
-        if self.Q is not None:
-            output_no_ft = self.Q.forward(x)
-        else:
-            output_no_ft = torch.zeros(x.shape[0], m).to(x.device)
+        output_no_ft = self.Q.forward(x)
 
         # Apply quantized L and R
         if self.L is not None:
             if self.quant_R:
-                xR = self.R.forward(x, float_precision=True)
+                xR = self.R.forward(x)
             else:
                 xR = (x.float() @ self.R.T.float())
 
             if self.quant_L:
-                output_no_ft += self.L.forward(xR, float_precision=True)
+                output_no_ft += self.L.forward(xR) #.reshape(output_no_ft.shape)
             else:
                 output_no_ft += xR.float() @ self.L.T.float()
 
@@ -326,8 +323,7 @@ class CalderaQuantizedLinear(nn.Module):
         else:
             output = output_no_ft
 
-        if self.hadamard:
-            output = matmul_hadU_cuda(output, self.had_right, self.K_right)
+        output = matmul_hadU_cuda(output, self.had_right, self.K_right)
         
         output = output * self.SV * self.global_scale
         if self.scaleWH is not None:
