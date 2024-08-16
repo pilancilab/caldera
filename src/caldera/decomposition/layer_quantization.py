@@ -306,7 +306,6 @@ class ActivationAwareLayerQuant:
         # Add back in the mean
         mu = H_data['mu']
         H.add_(mu[None, :] * mu[:, None])
-        H.div_(torch.diag(H).mean())
         H = regularize_H(H, H_data['n'], self.quant_params.quip_args.sigma_reg)
 
         return H
