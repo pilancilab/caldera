@@ -28,7 +28,6 @@ class LatticeQuantizedParameter(nn.Module):
         self.out_features = out_features
         self.transposed = transposed
         self.scale = scale
-        self.pre_scale = 32
         self.set_idxs_device = False
 
         self.codebook_version = codebook_version
@@ -47,6 +46,8 @@ class LatticeQuantizedParameter(nn.Module):
         for i in range(len(split_idxs)):
             self.register_buffer(f'idxs_{i}', split_idxs[i].to(idxs_dev))
             exec(f'self.idxs_list.append(self.idxs_{i})')
+
+        self.idxs = None
 
     def get_W_decompressed(self):
         n = self.in_features
@@ -85,7 +86,7 @@ class LatticeQuantizedParameter(nn.Module):
         #     self.set_idxs_device = True
         #     self.idxs_list[0] = self.idxs_list[0].to(x.device)
         #     self.codebook = self.codebook.to(x.device)
-        x = x / self.pre_scale
+        x = x / 32
         if not float_precision:
             x = x.half()
         else:
@@ -179,7 +180,7 @@ class LatticeQuantizedParameter(nn.Module):
                 else:
                     x = (x @ W_decompressed.T)
         x = x.to(dtype)
-        x *= self.scale * self.pre_scale
+        x *= self.scale * 32
         return x
 
 
@@ -268,6 +269,7 @@ class CalderaQuantizedLinear(nn.Module):
                     scale=self.L_scale,
                     codebook_version=self.L_codebook_version,
                 )
+                self.L_idxs = None
                 self.quant_L = True
             else:
                 self.L = nn.Parameter(L[:, ft_rank:], requires_grad=False)
@@ -281,6 +283,7 @@ class CalderaQuantizedLinear(nn.Module):
                     scale=self.R_scale,
                     codebook_version=self.R_codebook_version
                 )
+                self.R_idxs = None
                 self.quant_R = True
             else:
                 self.R = nn.Parameter(R[ft_rank:, :], requires_grad=False)
@@ -308,12 +311,12 @@ class CalderaQuantizedLinear(nn.Module):
         # Apply quantized L and R
         if self.L is not None:
             if self.quant_R:
-                xR = self.R.forward(x)
+                xR = self.R.forward(x, float_precision=True)
             else:
                 xR = (x.float() @ self.R.T.float())
 
             if self.quant_L:
-                output_no_ft += self.L.forward(xR) #.reshape(output_no_ft.shape)
+                output_no_ft += self.L.forward(xR, float_precision=True) #.reshape(output_no_ft.shape)
             else:
                 output_no_ft += xR.float() @ self.L.T.float()
 

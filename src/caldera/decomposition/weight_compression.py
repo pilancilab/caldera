@@ -134,13 +134,14 @@ class ActivationAwareWeightCompressor:
             token=model_params.token
         )
 
-        # Tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_params.base_model, use_fast=True,
-            token=model_params.token
-        )
-        tokenizer.pad_token = tokenizer.eos_token
         if self.compute_hessians:
+            # Tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_params.base_model, use_fast=True,
+                token=model_params.token
+            )
+            tokenizer.pad_token = tokenizer.eos_token
+            
             # Calibration dataset
             if data_params.devset == DevSet.RP1T:
                 self.devset = sample_rp1t(tokenizer,

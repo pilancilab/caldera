@@ -55,21 +55,18 @@ class Arguments:
     device: str = field(default="cuda:0", metadata={
         "help": "Device on which to run evaluation."
     })
-    ignore_rht_finetuning: bool = field(default=False, metadata={
-        "help": "If RHT finetuning has been performed, do *not* use the RHT-finetuned model."
-    })
 
 
 def eval_zero_shot(args: Arguments):
-    model = load_quantized_model(args.model_save_path, args.base_model, args.device,
-                                 include_rht_finetuning=not args.ignore_rht_finetuning)
+    print(args.base_model)
+    model = load_quantized_model(args.model_save_path, args.base_model, args.device)
     model = model.to(args.device)
     if args.finetune_save_dir is not None:
             from safetensors.torch import load_model
             for safetensor_file in glob.glob(args.finetune_save_dir + "/model*.safetensors"):
                 print("Loading ", safetensor_file)
                 load_model(model, safetensor_file, strict=False)
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model, use_fast=False)
     print("Loaded model!")
 
     tokenizer.pad_token = tokenizer.eos_token
