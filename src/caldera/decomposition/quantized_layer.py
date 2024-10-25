@@ -322,7 +322,7 @@ class CalderaQuantizedLinear(nn.Module):
 
         # Apply LoRA factors
         if self.ft_rank > 0:
-            output = output_no_ft + x @ self.R_ft.T @ self.L_ft.T
+            output = output_no_ft + x @ self.R_ft.T.float() @ self.L_ft.T.float()
         else:
             output = output_no_ft
 

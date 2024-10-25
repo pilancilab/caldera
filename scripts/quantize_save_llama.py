@@ -14,6 +14,7 @@ import os
 import torch.multiprocessing as mp
 import glog
 from lib.utils import graph_wrapper
+from lib.utils.unsafe_import import model_from_hf_path
 import shutil
 
 SUBLAYER_TO_STRING = {
@@ -238,16 +239,22 @@ def load_quantized_model(
     sequence_classification=False,
     seq_class_num_labels=2,
     cuda_graph=False,
-    finetuning=False
 ):
-    model = torch.load(model_save_path, map_location=device).to(device)
+    model = torch.load(model_save_path, map_location=device).to(device) # Llama with Caldera
     if cuda_graph:
         graph_model = graph_wrapper.get_graph_wrapper(LlamaForCausalLM, device=device).from_pretrained(
                 base_model, torch_dtype='auto', device_map=device, low_cpu_mem_usage=True,
                 use_flash_attention_2=True
-        )    
-        graph_model.model.layers = model.model.layers
-        model = graph_model
+        ).to(device) # base Llama
+
+        for i in range(len(graph_model.model.layers)):
+            graph_model.model.layers[i].self_attn.q_proj = model.model.layers[i].self_attn.q_proj
+            graph_model.model.layers[i].self_attn.k_proj = model.model.layers[i].self_attn.k_proj
+            graph_model.model.layers[i].self_attn.v_proj = model.model.layers[i].self_attn.v_proj
+            graph_model.model.layers[i].self_attn.o_proj = model.model.layers[i].self_attn.o_proj
+            graph_model.model.layers[i].mlp = model.model.layers[i].mlp
+        return graph_model
+    
     elif sequence_classification:
         seq_model = AutoModelForSequenceClassification.from_pretrained(
             base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True, num_labels=seq_class_num_labels
@@ -257,23 +264,22 @@ def load_quantized_model(
         seq_model.model.layers = model.model.layers
         model = seq_model
 
-    if finetuning:
-        model.lm_head.weight.requires_grad = False
-        model.lm_head.weight.requires_grad = False
+    # model.lm_head.weight.requires_grad = False
+    # model.lm_head.weight.requires_grad = False
 
-        model.lm_head.weight.requires_grad = False
+    # model.lm_head.weight.requires_grad = False
 
-        model.model.embed_tokens.weight.requires_grad = False
-        model.model.embed_tokens.weight.requires_grad = False
-        model.model.embed_tokens = model.model.embed_tokens.to(device)
+    # model.model.embed_tokens.weight.requires_grad = False
+    # model.model.embed_tokens.weight.requires_grad = False
+    # model.model.embed_tokens = model.model.embed_tokens.to(device)
 
-        model.model.embed_tokens.weight.requires_grad = False
-        model.model.embed_tokens = model.model.embed_tokens.to(device)
+    # model.model.embed_tokens.weight.requires_grad = False
+    # model.model.embed_tokens = model.model.embed_tokens.to(device)
 
-        model.model.norm.weight.requires_grad = False
-        for layer in model.model.layers:
-            layer.post_attention_layernorm.weight.requires_grad = False
-            layer.input_layernorm.weight.requires_grad = False
+    # model.model.norm.weight.requires_grad = False
+    # for layer in model.model.layers:
+    #     layer.post_attention_layernorm.weight.requires_grad = False
+    #     layer.input_layernorm.weight.requires_grad = False
 
     return model
 

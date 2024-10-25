@@ -45,8 +45,8 @@ class Arguments:
 def eval_ppl(args: Arguments):
     
     with torch.no_grad():
-        model = load_quantized_model(args.model_save_path, args.base_model, args.device)
-        model = model.to(args.device)
+        model = load_quantized_model(args.model_save_path, args.base_model, args.device, cuda_graph=True)
+        # model = model.to(args.device).float()
 
         if args.finetune_save_dir is not None:
             from safetensors.torch import load_model
