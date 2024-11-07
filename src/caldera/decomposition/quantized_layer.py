@@ -6,7 +6,6 @@ from lib.utils import get_hadK
 
 import quiptools_cuda
 from lib.utils.matmul_had import matmul_hadU_cuda, matmul_hadUt_cuda
-from timeit import default_timer as timer
 
 
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp
@@ -28,7 +27,6 @@ class LatticeQuantizedParameter(nn.Module):
         self.out_features = out_features
         self.transposed = transposed
         self.scale = scale
-        self.set_idxs_device = False
 
         self.codebook_version = codebook_version
         self.codebook = codebook.codebook_id[codebook_version][1](inference=True).to(torch.float16).to(idxs.device)
@@ -82,10 +80,11 @@ class LatticeQuantizedParameter(nn.Module):
         dtype = x.dtype
         n = self.in_features
         m = self.out_features
-        # if not self.set_idxs_device:
-        #     self.set_idxs_device = True
-        #     self.idxs_list[0] = self.idxs_list[0].to(x.device)
-        #     self.codebook = self.codebook.to(x.device)
+
+        if self.idxs_list[0].device != x.device:
+            for i in range(len(self.idxs_list)):
+                self.idxs_list[i] = self.idxs_list[0].to(x.device)
+            self.codebook = self.codebook.to(x.device)
         x = x / 32
         if not float_precision:
             x = x.half()
@@ -263,11 +262,12 @@ class CalderaQuantizedLinear(nn.Module):
         if self.rank > ft_rank:
             if self.L_codebook_version is not None:
                 self.L = LatticeQuantizedParameter(
-                    out_features=self.out_features,
-                    in_features=self.rank - ft_rank,
+                    in_features=self.out_features,
+                    out_features=self.rank - ft_rank,
                     idxs=self.L_idxs[ft_rank:, :],
                     scale=self.L_scale,
                     codebook_version=self.L_codebook_version,
+                    transposed=True
                 )
                 self.L_idxs = None
                 self.quant_L = True
@@ -316,7 +316,7 @@ class CalderaQuantizedLinear(nn.Module):
                 xR = (x.float() @ self.R.T.float())
 
             if self.quant_L:
-                output_no_ft += self.L.forward(xR, float_precision=True) #.reshape(output_no_ft.shape)
+                output_no_ft += self.L.forward(xR, float_precision=True)
             else:
                 output_no_ft += xR.float() @ self.L.T.float()
 

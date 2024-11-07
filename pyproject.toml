@@ -132,7 +132,6 @@ dependencies = [
     "sentencepiece==0.2.0",
     "protobuf==5.26.0",
     "tensorboard==2.16.2",
-    "fast-hadamard-transform"
 ]
 
 [tool.setuptools.packages.find]

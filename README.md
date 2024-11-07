@@ -7,18 +7,20 @@ To enhance performance on specific tasks, CALDERA also supports LoRA ([Hu et al,
 
 ## Setup Instructions
 
-1. Install `caldera` as an editable submodule (named `caldera`).
+1. Install `caldera` as a submodule (named `caldera`).
 From the home directory of this repository, run
 ```
-pip install --editable .
+pip install .
 ```
-This will automatically install all dependencies.
+This will automatically install all dependencies, except `fast-hadamard-transform`, which has dependency issues.
 
 2. Setup the QuIP# ([Tseng et al, 2024](https://arxiv.org/pdf/2402.04396)) submodule:
 ```
 ./setup_quip_sharp.sh
 ```
 QuIP# is used for the quantization of the $\mathbf{Q}$ matrix, and also provides useful subroutines for Hessian computation.
+
+3. Install `fast-hadamard-transform`: `pip install fast-hadamard-transform`.
 
 ## Repo Structure
 

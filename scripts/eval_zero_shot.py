@@ -31,8 +31,7 @@ class LMEvalAdaptorWithDevice(LMEvalAdaptor):
 @dataclass
 class Arguments:
     model_save_path: str = field(metadata={
-        "help": ("Path in which the quantized model was saved via "
-                 "quantize_save_llama.py")
+        "help": ("Path of the .pt file in which the model can be found.")
     })
     finetune_save_dir: str = field(default=None, metadata={
         "help": ("If using a finetuned model, the directory in which the "
@@ -55,11 +54,14 @@ class Arguments:
     device: str = field(default="cuda:0", metadata={
         "help": "Device on which to run evaluation."
     })
+    cuda_graph: bool = field(default=False, metadata={
+        "help": "Whether to use CUDA graphs and flash attention to speed up evaluation."
+    })
 
 
 def eval_zero_shot(args: Arguments):
     print(args.base_model)
-    model = load_quantized_model(args.model_save_path, args.base_model, args.device)
+    model = load_quantized_model(args.model_save_path, args.base_model, args.device, cuda_graph=args.cuda_graph)
     model = model.to(args.device)
     if args.finetune_save_dir is not None:
             from safetensors.torch import load_model

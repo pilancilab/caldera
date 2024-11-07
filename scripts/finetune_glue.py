@@ -219,12 +219,6 @@ def parse_args():
         default=None,
         help="Pretrained config name or path if not the same as model_name",
     )
-    parser.add_argument(
-        "--ignore_rht_finetuning",
-        type=bool,
-        default=False,
-        help="If RHT finetuning has been performed on the CALDERA model, do *not* use the RHT-finetuned model."
-    )
 
     args = parser.parse_args()
 
@@ -380,7 +374,6 @@ def main():
     model = load_quantized_model(
         args.model_name_or_path, args.base_model, 
         accelerator.device, sequence_classification=True,
-        include_rht_finetuning=not args.ignore_rht_finetuning
     ).to(torch.bfloat16)
     for name, param in model.named_parameters():
         if 'SU' in name or 'SV' in name:

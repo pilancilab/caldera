@@ -14,7 +14,6 @@ import os
 import torch.multiprocessing as mp
 import glog
 from lib.utils import graph_wrapper
-from lib.utils.unsafe_import import model_from_hf_path
 import shutil
 
 SUBLAYER_TO_STRING = {
@@ -34,7 +33,7 @@ class Arguments:
         metadata={"help": "Path in which the Hessians were stored"}
     )
     model_save_path: str = field(
-        metadata={"help": ("Path in which to save the quantized model.")}
+        metadata={"help": ("Path in which to save the quantized model, e.g., artifacts/model.pt")}
     )
     base_model: str = field(
         metadata={
@@ -198,12 +197,11 @@ def quantize_save_llama(
         p.join()
 
     # now save the full model
-    model = load_layers(model_save_path, base_model)
-    torch.save(model, f"{model_save_path}/model.pt")
+    model = load_layers_cpu(model_save_path, base_model)
+    shutil.rmtree(f'{model_save_path}/') 
+    torch.save(model, f"{model_save_path}")
 
-    shutil.rmtree(f'{model_save_path}/layers') 
-
-def load_layers(
+def load_layers_cpu(
     model_save_path,
     base_model,
 ):
@@ -213,7 +211,7 @@ def load_layers(
     
     for layer_idx in range(len(model.model.layers)):
         layer = torch.load(
-            f"{model_save_path}/quant_layer_{layer_idx}.pt",
+            f"{model_save_path}/layers/quant_layer_{layer_idx}.pt",
             map_location="cpu"
         )
         layer.post_attention_layernorm.weight.requires_grad = False
@@ -240,20 +238,25 @@ def load_quantized_model(
     seq_class_num_labels=2,
     cuda_graph=False,
 ):
-    model = torch.load(model_save_path, map_location=device).to(device) # Llama with Caldera
+    model = torch.load(model_save_path, map_location=device).to(device)
     if cuda_graph:
-        graph_model = graph_wrapper.get_graph_wrapper(LlamaForCausalLM, device=device).from_pretrained(
-                base_model, torch_dtype='auto', device_map=device, low_cpu_mem_usage=True,
-                use_flash_attention_2=True
-        ).to(device) # base Llama
-
+        graph_model = graph_wrapper.get_graph_wrapper(AutoModelForCausalLM, device="cpu").from_pretrained(
+            base_model, torch_dtype='auto', device_map="cpu", low_cpu_mem_usage=True,
+            use_flash_attention_2=True
+        ).to("cpu")
         for i in range(len(graph_model.model.layers)):
             graph_model.model.layers[i].self_attn.q_proj = model.model.layers[i].self_attn.q_proj
             graph_model.model.layers[i].self_attn.k_proj = model.model.layers[i].self_attn.k_proj
             graph_model.model.layers[i].self_attn.v_proj = model.model.layers[i].self_attn.v_proj
             graph_model.model.layers[i].self_attn.o_proj = model.model.layers[i].self_attn.o_proj
             graph_model.model.layers[i].mlp = model.model.layers[i].mlp
-        return graph_model
+            graph_model.model.layers[i].post_attention_layernorm = graph_model.model.layers[i].post_attention_layernorm.to(device)
+            graph_model.model.layers[i].input_layernorm = graph_model.model.layers[i].input_layernorm.to(device)
+        graph_model.model.norm = graph_model.model.norm.to(device)
+        graph_model.model.embed_tokens = graph_model.model.embed_tokens.to(device)
+        graph_model.lm_head = graph_model.lm_head.to(device)
+        graph_model.graph_device = device
+        model = graph_model.to(device )
     
     elif sequence_classification:
         seq_model = AutoModelForSequenceClassification.from_pretrained(
@@ -261,25 +264,17 @@ def load_quantized_model(
         ).cpu()
         seq_model.score = seq_model.score.to(device)
         seq_model.score.weight.requires_grad = True
+        model.model.embed_tokens = model.model.embed_tokens.to(device)
         seq_model.model.layers = model.model.layers
-        model = seq_model
+        model = seq_model.to(device)
 
-    # model.lm_head.weight.requires_grad = False
-    # model.lm_head.weight.requires_grad = False
-
-    # model.lm_head.weight.requires_grad = False
-
-    # model.model.embed_tokens.weight.requires_grad = False
-    # model.model.embed_tokens.weight.requires_grad = False
-    # model.model.embed_tokens = model.model.embed_tokens.to(device)
-
-    # model.model.embed_tokens.weight.requires_grad = False
-    # model.model.embed_tokens = model.model.embed_tokens.to(device)
-
-    # model.model.norm.weight.requires_grad = False
-    # for layer in model.model.layers:
-    #     layer.post_attention_layernorm.weight.requires_grad = False
-    #     layer.input_layernorm.weight.requires_grad = False
+    if not sequence_classification:
+        model.lm_head.weight.requires_grad = False
+    model.model.embed_tokens.weight.requires_grad = False
+    model.model.norm.weight.requires_grad = False
+    for layer in model.model.layers:
+        layer.post_attention_layernorm.weight.requires_grad = False
+        layer.input_layernorm.weight.requires_grad = False
 
     return model
 

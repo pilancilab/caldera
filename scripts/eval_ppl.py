@@ -7,15 +7,13 @@ import transformers
 import os
 import json
 import glob
-from transformers import AutoModelForCausalLM
 
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp
 
 @dataclass
 class Arguments:
     model_save_path: str = field(metadata={
-        "help": ("Path in which the quantized model was saved via "
-                 "quantize_save_llama.py")
+        "help": ("Path of the .pt file in which the model can be found.")
     })
     finetune_save_dir: str = field(default=None, metadata={
         "help": ("If using a finetuned model, the directory in which the "
@@ -40,13 +38,15 @@ class Arguments:
     datasets: list[str] = field(default_factory=list, metadata={
         "help": ("Which datasets, out of \"wikitext2\" and \"c4\" to compute "
                  "perplexity. Defaults to both datasets")})
+    cuda_graph: bool = field(default=False, metadata={
+        "help": "Whether to use CUDA graphs and flash attention to speed up evaluation."
+    })
 
 
 def eval_ppl(args: Arguments):
     
     with torch.no_grad():
-        model = load_quantized_model(args.model_save_path, args.base_model, args.device, cuda_graph=True)
-        # model = model.to(args.device).float()
+        model = load_quantized_model(args.model_save_path, args.base_model, args.device, cuda_graph=args.cuda_graph)
 
         if args.finetune_save_dir is not None:
             from safetensors.torch import load_model

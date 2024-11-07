@@ -431,8 +431,8 @@ def update_LR(
                 if torch.isnan(R).any():
                     L = residual @ torch.linalg.pinv(R)
 
-            quant_out_L = quantize_matrix(L, quant_params, quant_info_L)
-            L = quant_out_L.A_hat
+            quant_out_L = quantize_matrix(L.T, quant_params, quant_info_L)
+            L = quant_out_L.A_hat.T
             
             # R
             R = torch.linalg.lstsq(L, residual)[0]

@@ -10,3 +10,4 @@ artifacts/
 .vscode
 shell_scripts/custom
 wandb
+.python-version

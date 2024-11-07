@@ -1,15 +1,23 @@
 #!/bin/bash
 
-DEVICES="0,1,2,3"
+SCRIPT_FILLED_IN=0
+
 BASE_MODEL="meta-llama/Llama-2-7b-hf"
-CALDERA_MODEL_SAVE_DIR="YOUR DIRECTORY HERE"
-OUTPUT_DIR="YOUR DIRECTORY HERE"
+CALDERA_MODEL_SAVE_PATH="PATH OF .pt FILE WITH MODEL"
+OUTPUT_DIR="FINETUNING OUTPUT DIRECTORY"
 GLUE_TASK="rte"
 
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file shell_scripts/accelerate_config.yaml \
+if [ $SCRIPT_FILLED_IN -eq 0 ]; then
+    echo -e "This script is meant as a template for running scripts/finetune_glue.py. \
+Please go into shell_scripts/run_finetune_glue.sh and replace BASE_MODEL, \
+CALDERA_MODEL_SAVE_PATH, etc., and then set SCRIPT_FILLED_IN=1 at the top of the file."
+  exit -0
+fi
+
+accelerate launch --config_file shell_scripts/accelerate_config.yaml \
     scripts/finetune_glue.py \
     --task_name $GLUE_TASK \
-    --model_name_or_path $CALDERA_MODEL_SAVE_DIR \
+    --model_name_or_path $CALDERA_MODEL_SAVE_PATH \
     --base_model $BASE_MODEL \
     --output_dir $OUTPUT_DIR \
     --learning_rate 3e-5 \

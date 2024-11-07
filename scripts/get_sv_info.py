@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoModelForCausalLM, HfArgumentParser, AutoModelForSequenceClassification
+from transformers import AutoModelForCausalLM, HfArgumentParser
 import gc
 from tqdm import tqdm
 from dataclasses import dataclass, field
@@ -18,7 +18,7 @@ class Arguments:
     save_dir: str = field(default="./data")
 
 SUBLAYERS = {
-    # "q_proj": lambda layer: layer.self_attn.q_proj,
+    "q_proj": lambda layer: layer.self_attn.q_proj,
     "k_proj": lambda layer: layer.self_attn.k_proj,
     "v_proj": lambda layer: layer.self_attn.v_proj,
     "o_proj": lambda layer: layer.self_attn.o_proj,
