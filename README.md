@@ -7,18 +7,32 @@ To enhance performance on specific tasks, CALDERA also supports LoRA ([Hu et al,
 
 ## Setup Instructions
 
-1. Install `caldera` as an editable submodule (named `caldera`).
+### Note on Python, CUDA, and PyTorch Versions
+These setup instructions have been tested on Python 3.10 and 3.11, CUDA 12.1 and 12.2, and PyTorch 2.2.
+
+In particular, the package `fast-hadamard-transform` lacks wheels for newer versions of these dependencies; the available wheels can be found [here](https://github.com/Dao-AILab/fast-hadamard-transform) (the wheel filenames are of the form `fast_hadamard_transform-1.0.4.post1+cu<CUDA_VERSION>torch<PYTORCH_VERSION>xx11abiTRUE-cp<PYTHON_VERSION>-cp<PYTHON_VERSION>-linux_x86_64.whl`).
+
+### Instructions
+1. Install `caldera` as a submodule (named `caldera`).
 From the home directory of this repository, run
 ```
-pip install --editable .
+pip install .
 ```
-This will automatically install all dependencies.
+This will automatically install all dependencies, except `fast-hadamard-transform`, which has dependency issues.
 
 2. Setup the QuIP# ([Tseng et al, 2024](https://arxiv.org/pdf/2402.04396)) submodule:
 ```
 ./setup_quip_sharp.sh
 ```
+
+This script first sets up the QuIP# Python library, and then builds the `quiptools` CUDA library, which provides dequantization kernels for inference.
+
 QuIP# is used for the quantization of the $\mathbf{Q}$ matrix, and also provides useful subroutines for Hessian computation.
+
+3. Install `fast-hadamard-transform`: `pip install fast-hadamard-transform`.
+
+**Note**: If you get the error `package 'wheel' is not installed`, you can install it using `pip install wheel`.
+
 
 ## Repo Structure
 

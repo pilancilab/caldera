@@ -13,8 +13,7 @@ import glob
 @dataclass
 class Arguments:
     model_save_path: str = field(metadata={
-        "help": ("Path in which the quantized model was saved via "
-                 "quantize_save_llama.py")
+        "help": ("Path of the .pt file in which the model can be found.")
     })
     finetune_save_dir: str = field(default=None, metadata={
         "help": ("If using a finetuned model, the directory in which the "
@@ -39,22 +38,22 @@ class Arguments:
     datasets: list[str] = field(default_factory=list, metadata={
         "help": ("Which datasets, out of \"wikitext2\" and \"c4\" to compute "
                  "perplexity. Defaults to both datasets")})
-    ignore_rht_finetuning: bool = field(default=False, metadata={
-        "help": "If RHT finetuning has been performed, do *not* use the RHT-finetuned model."
+    cuda_graph: bool = field(default=False, metadata={
+        "help": "Whether to use CUDA graphs and flash attention to speed up evaluation."
     })
 
 
 def eval_ppl(args: Arguments):
     
     with torch.no_grad():
-        model = load_quantized_model(args.model_save_path, args.base_model, args.device,
-                                     include_rht_finetuning=not args.ignore_rht_finetuning)
-        model = model.to(args.device).float()
+        model = load_quantized_model(args.model_save_path, args.base_model, args.device, cuda_graph=args.cuda_graph)
+
         if args.finetune_save_dir is not None:
             from safetensors.torch import load_model
             for safetensor_file in glob.glob(args.finetune_save_dir + "/model*.safetensors"):
                 print("Loading ", safetensor_file)
                 load_model(model, safetensor_file, strict=False)
+
             
         if not args.datasets:
             args.datasets = ["wikitext2", "c4"]
@@ -73,7 +72,6 @@ def eval_ppl(args: Arguments):
             progress = tqdm(range(nsamples))
             for ii in progress:
                 input = input_tok[ii, :].to(args.device).view(1, -1)
-
                 output = model(input,
                             use_cache=False,
                             output_hidden_states=False,

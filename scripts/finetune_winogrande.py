@@ -35,9 +35,6 @@ class ModelArguments:
         default=None,
         metadata={"help": "HF token to access to private models, e.g., meta-llama"},
     )
-    ignore_rht_finetuning: bool = field(default=False, metadata={
-        "help": "If RHT finetuning has been performed, do *not* use the RHT-finetuned model."
-    })
 
 
 @dataclass
@@ -127,8 +124,7 @@ def train():
 
     model = load_quantized_model(
         model_args.model_name_or_path, model_args.base_model,
-        accelerator.device, sequence_classification=True,
-        include_rht_finetuning=not model_args.ignore_rht_finetuning
+        accelerator.device, sequence_classification=True
     ).to(torch.bfloat16)
 
     for name, param in model.named_parameters():

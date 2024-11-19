@@ -6,3 +6,8 @@ data/
 naomi/results
 .gitconfig
 .vscode/settings.json
+artifacts/
+.vscode
+shell_scripts/custom
+wandb
+.python-version

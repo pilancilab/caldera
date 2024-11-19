@@ -7,7 +7,8 @@ import gc
 from quantize_save_llama import load_quantized_model
 from dataclasses import dataclass, field
 from tqdm import tqdm
-from safetensors.torch import save_model
+from safetensors.torch import save_model, load_model
+import os
 
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp
 
@@ -18,9 +19,11 @@ class Arguments:
         "help": ("Path of the original model, as either a local or a "
                  "Huggingface path")
     })
-    model_save_path: str = field(metadata={
-        "help": ("Path in which the quantized model was saved via "
-                 "quantize_save_llama.py")
+    model_path: str = field(metadata={
+        "help": ("Path of the .pt file in which the model can be found.")
+    })
+    finetuned_save_path: str = field(metadata={
+        "help": ("Path in which to save the final finetuned model")
     })
     devset_size: int = field(default=256, metadata={
         "help": ("Number of datapoints to sample from the calibration set "
@@ -48,14 +51,10 @@ class Arguments:
         "help": "Learning rate for the randomized Hadamard transform parameters."
     })
     factors_learning_rate: float = field(default=1e-4, metadata={
-        "help": "Learning rate for L ands R, if finetune_factors is set True."
+        "help": "Learning rate for L andsR, if finetune_factors is set True."
     })
     epochs: int = field(default=5, metadata={
         "help": "Number of epochs of finetuning."
-    })
-    continue_training: bool = field(default=False, metadata={
-        "help": ("Whether to continue training from the checkpoint saved in "
-                 "model_save_path/RHT_ft_model.safentensors")
     })
 
 
@@ -65,6 +64,9 @@ def main(args: Arguments):
     tokenizer.pad_token = tokenizer.eos_token
     devset = sample_rp1t(tokenizer, args.devset_size, args.ctx_size, 1)
 
+    # Get the logits for the calibration set from the original model. The loss
+    # function for finetuning will be the cross-entropy loss between the quantized
+    # model logits and these logits.
     orig_model = AutoModelForCausalLM.from_pretrained(
         args.base_model, torch_dtype='auto', device_map=args.device, low_cpu_mem_usage=True
     ).to(args.device)
@@ -82,8 +84,7 @@ def main(args: Arguments):
 
     torch.set_grad_enabled(True)
     quant_model = load_quantized_model(
-        args.model_save_path, args.base_model, 
-        args.device, include_rht_finetuning=args.continue_training
+        args.model_path, args.base_model, args.device
     ).to(args.device).float()
 
     factor_params = []
@@ -125,7 +126,7 @@ def main(args: Arguments):
         val_loss /= len(valid_dataloader)
         print("Validation loss: ", val_loss)
         best_val_loss = val_loss
-        save_model(quant_model, args.model_save_path + "/RHT_ft_model.safetensors")
+        save_model(quant_model, args.finetuned_save_path)
 
     progress_bar = tqdm(range(len(train_dataloader)*args.epochs))
     for _ in range(args.epochs):
@@ -156,10 +157,15 @@ def main(args: Arguments):
             val_loss /= len(valid_dataloader)
             print("Validation loss: ", val_loss)
             if val_loss < best_val_loss:
-                save_model(quant_model, args.model_save_path + "/RHT_ft_model.safetensors")
+                save_model(quant_model, args.finetuned_save_path)
                 best_val_loss = val_loss
         quant_model.train()
 
+    quant_model = load_quantized_model(
+        args.model_path, args.base_model, args.device
+    ).to(args.device)
+    load_model(quant_model, args.finetuned_save_path)
+    torch.save(quant_model, args.finetuned_save_path)
 
 if __name__ == "__main__":
     parser = HfArgumentParser([Arguments])

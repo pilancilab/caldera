@@ -29,7 +29,7 @@ class LatticeQuantizedParameter(nn.Module):
         self.scale = scale
 
         self.codebook_version = codebook_version
-        self.codebook = codebook.get_codebook(codebook_version).to(idxs.device)
+        self.codebook = codebook.codebook_id[codebook_version][1](inference=True).to(torch.float16).to(idxs.device)
 
         idxs_dev = idxs.device
         self.idxs = idxs.cpu()
@@ -44,6 +44,8 @@ class LatticeQuantizedParameter(nn.Module):
         for i in range(len(split_idxs)):
             self.register_buffer(f'idxs_{i}', split_idxs[i].to(idxs_dev))
             exec(f'self.idxs_list.append(self.idxs_{i})')
+
+        self.idxs = None
 
     def get_W_decompressed(self):
         n = self.in_features
@@ -78,17 +80,23 @@ class LatticeQuantizedParameter(nn.Module):
         dtype = x.dtype
         n = self.in_features
         m = self.out_features
-        self.idxs_list[0] = self.idxs_list[0].to(x.device)
+
+        if self.idxs_list[0].device != x.device:
+            for i in range(len(self.idxs_list)):
+                self.idxs_list[i] = self.idxs_list[0].to(x.device)
+            self.codebook = self.codebook.to(x.device)
+        x = x / 32
         if not float_precision:
             x = x.half()
         else:
             x = x.float()
+
         if self.codebook_version == 'E8P12':
             if x.size(0) == 1 and not self.transposed and not float_precision:
                 x = quiptools_cuda.decode_matvec_e8p(
                     x[0].to(torch.float16),
                     self.idxs_list[0].view(m // 16, n // 64, 8, 4),
-                    self.codebook.grid_packed_abs)
+                    self.codebook.grid_packed_abs).unsqueeze(0)
             else:
                 W_decompressed = quiptools_cuda.decompress_packed_e8p(
                     self.idxs_list[0].view(m // 16, n // 64, 8, 4),
@@ -117,6 +125,7 @@ class LatticeQuantizedParameter(nn.Module):
                 x = quiptools_cuda.decode_matvec_e8p(
                     x16[0], self.idxs_list[0].view(m // 16, n // 64, 8, 4),
                     self.codebook.grid_packed_abs) + z[0]
+                x = x.unsqueeze(0)
 
             else:
                 W_decompressed = quiptools_cuda.decompress_packed_e8p(
@@ -135,8 +144,8 @@ class LatticeQuantizedParameter(nn.Module):
                 )
 
                 if float_precision:
-                    W_decompressed = W_decompressed.float()                
-                    W_resid_decompressed = W_resid_decompressed.float()
+                    W_decompressed = W_decompressed.to(torch.bfloat16)            
+                    W_resid_decompressed = W_resid_decompressed.to(torch.bfloat16)
 
                 if self.transposed:
                     x = (x @ (W_decompressed +
@@ -154,7 +163,7 @@ class LatticeQuantizedParameter(nn.Module):
                      quiptools_cuda.decode_matvec_e8p(
                          x16 / resid_scale, self.idxs_list[1].view(
                              m // 16, n // 64, 8, 4),
-                         self.codebook.grid_packed_abs))
+                         self.codebook.grid_packed_abs)).unsqueeze(0)
             else:
                 W_decompressed = quiptools_cuda.decompress_packed_e8p(
                     self.idxs_list[0].view(m // 16, n // 64, 8, 4),
@@ -169,8 +178,9 @@ class LatticeQuantizedParameter(nn.Module):
                     x = (x @ W_decompressed)
                 else:
                     x = (x @ W_decompressed.T)
-        x *= self.scale
-        return x.to(dtype)
+        x = x.to(dtype)
+        x *= self.scale * 32
+        return x
 
 
 class CalderaQuantizedLinear(nn.Module):
@@ -227,8 +237,8 @@ class CalderaQuantizedLinear(nn.Module):
 
         self.split_L_and_R_for_LoRA(ft_rank, L, R)
 
-        self.SU = nn.Parameter(SU.bfloat16(), requires_grad=True)
-        self.SV = nn.Parameter(SV.bfloat16(), requires_grad=True)
+        self.SU = nn.Parameter(SU, requires_grad=True)
+        self.SV = nn.Parameter(SV, requires_grad=True)
 
         had_left, K_left = get_hadK(in_features)
         had_right, K_right = get_hadK(out_features)
@@ -244,9 +254,9 @@ class CalderaQuantizedLinear(nn.Module):
     def split_L_and_R_for_LoRA(self, ft_rank, L, R):
         if ft_rank > 0:
             self.L_ft = nn.Parameter(
-                L[:, :ft_rank].bfloat16(), requires_grad=True)
+                L[:, :ft_rank], requires_grad=True)
             self.R_ft = nn.Parameter(
-                R[:ft_rank, :].bfloat16(), requires_grad=True)
+                R[:ft_rank, :], requires_grad=True)
             assert self.L_ft != [] and self.R_ft != []
 
         if self.rank > ft_rank:
@@ -259,9 +269,10 @@ class CalderaQuantizedLinear(nn.Module):
                     codebook_version=self.L_codebook_version,
                     transposed=True
                 )
+                self.L_idxs = None
                 self.quant_L = True
             else:
-                self.L = nn.Parameter(L[:, ft_rank:].bfloat16(), requires_grad=False)
+                self.L = nn.Parameter(L[:, ft_rank:], requires_grad=False)
                 self.quant_L = False
 
             if self.R_codebook_version is not None:
@@ -272,9 +283,10 @@ class CalderaQuantizedLinear(nn.Module):
                     scale=self.R_scale,
                     codebook_version=self.R_codebook_version
                 )
+                self.R_idxs = None
                 self.quant_R = True
             else:
-                self.R = nn.Parameter(R[ft_rank:, :].bfloat16(), requires_grad=False)
+                self.R = nn.Parameter(R[ft_rank:, :], requires_grad=False)
                 self.quant_R = False
         else:
             self.L = None
@@ -283,21 +295,18 @@ class CalderaQuantizedLinear(nn.Module):
 
     def forward(self, x):
         old_dtype = x.dtype
+        x = x.float()
         shape = x.shape
         n, m = len(self.SU), len(self.SV)
-        x = x.bfloat16().view(-1, n)
+        x = x.view(-1, n)
         # Preprocessing
-        x = x * self.SU 
         if self.scaleWH is not None:
             x /= self.scaleWH
-        if self.hadamard:
-            x = matmul_hadUt_cuda(x, self.had_left, self.K_left)
+        x = x * self.SU 
+        x = matmul_hadUt_cuda(x, self.had_left, self.K_left)
 
         # Apply Q
-        if self.Q is not None:
-            output_no_ft = self.Q.forward(x)
-        else:
-            output_no_ft = torch.zeros(x.shape[0], m).to(torch.bfloat16).to(x.device)
+        output_no_ft = self.Q.forward(x)
 
         # Apply quantized L and R
         if self.L is not None:
@@ -309,18 +318,17 @@ class CalderaQuantizedLinear(nn.Module):
             if self.quant_L:
                 output_no_ft += self.L.forward(xR, float_precision=True)
             else:
-                output_no_ft += (xR.float() @ self.L.T.float()).to(torch.bfloat16)
+                output_no_ft += xR.float() @ self.L.T.float()
 
         # Apply LoRA factors
         if self.ft_rank > 0:
-            output = output_no_ft + x @ self.R_ft.T @ self.L_ft.T
+            output = output_no_ft + x @ self.R_ft.T.float() @ self.L_ft.T.float()
         else:
             output = output_no_ft
 
-        if self.hadamard:
-            output = matmul_hadU_cuda(output, self.had_right, self.K_right) * self.global_scale
+        output = matmul_hadU_cuda(output, self.had_right, self.K_right)
         
-        output = output * self.SV
+        output = output * self.SV * self.global_scale
         if self.scaleWH is not None:
             output *= self.scaleWH
         return output.view(*shape[:-1], m).to(old_dtype)
