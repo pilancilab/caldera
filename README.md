@@ -7,12 +7,11 @@ To enhance performance on specific tasks, CALDERA also supports Low Rank Adaptat
 🔗 Paper link: [Compressing Large Language Models using Low Rank
 and Low Precision Decomposition](https://openreview.net/pdf?id=lkx3OpcqSZ)
 
-<div align="center">
-    <figure>
-        <img src="assets/caldera_decomposition.png" alt="Alt Text" width="650"/>
-        <figcaption> CALDERA decomposes a full-precision weight matrix into a low-rank component (<b>LR</b>), which captures the contribution of the top singular values using B<sub>L</sub>, B<sub>R</sub> bits, and <b>Q</b> for the trailing singular values with B<sub>Q</sub> bits, enabling flexible precision settings for each component..</figcaption>
-    </figure>
-</div>
+<p align="center">
+  <img src="assets/caldera_decomposition.png" alt="Alt Text" width="750">
+</p>
+
+<p align="center">CALDERA decomposes a full-precision weight matrix into a low-rank component (<b>LR</b>), which captures the contribution of the top singular values using B<sub>L</sub>, B<sub>R</sub> bits, and <b>Q</b> for the trailing singular values with B<sub>Q</sub> bits, enabling flexible precision settings for each component.</p>
 
 
 ## Setup Instructions
