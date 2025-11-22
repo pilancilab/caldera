@@ -21,4 +21,4 @@ python scripts/eval_ppl.py \
     --seqlen 4096 \
     --datasets wikitext2 c4 \
     --device $DEVICE \
-    --output-path $OUTPUT_FILENAME
+    --output_path $OUTPUT_FILENAME
