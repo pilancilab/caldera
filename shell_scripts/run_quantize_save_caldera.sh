@@ -33,7 +33,7 @@ QUANT_PARAMS="--Q_bits 2 \
     --activation_aware_LR true \
     --activation_aware_Q true \
     --hadamard_transform true \
-    --iters $CALIBRATION_SIZE \
+    --iters $CALDERA_ITERS \
     --lplr_iters $LPLR_ITERS \
     --rand_svd true \
     --update_order LR Q \
@@ -44,5 +44,5 @@ python scripts/quantize_save_llama.py \
     --hessian_save_path $HESSIAN_SAVE_DIR \
     --model_save_path $CALDERA_MODEL_SAVE_PATH \
     --devices $DEVICES \
-    --base_model $HF_MODEL \
+    --base_model $BASE_MODEL \
     $QUANT_PARAMS

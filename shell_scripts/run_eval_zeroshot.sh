@@ -20,4 +20,4 @@ python scripts/eval_zero_shot.py \
     --tasks winogrande rte piqa arc_easy arc_challenge \
     --base_model $BASE_MODEL \
     --batch_size 8 \
-    --output-path $OUTPUT_FILENAME
+    --output_path $OUTPUT_FILENAME
