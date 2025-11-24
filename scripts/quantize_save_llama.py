@@ -1,4 +1,7 @@
+import random
 import sys
+
+import numpy as np
 from caldera.decomposition.dataclasses import *
 from caldera.decomposition.weight_compression import ActivationAwareWeightCompressor
 from caldera.utils.enums import TransformerSubLayers
@@ -77,6 +80,13 @@ class Arguments:
         },
     )
 
+    random_seed: int = field(
+        default=42,
+        metadata={
+            "help": "Random seed for reproducibility."
+        },
+    )
+
 
 def quant_layer(
     in_q,
@@ -89,7 +99,13 @@ def quant_layer(
     data_params,
     quant_params,
     hessian_save_path,
+    random_seed
 ):
+    np.random.seed(random_seed)
+    torch.manual_seed(random_seed)
+    torch.cuda.manual_seed_all(random_seed)
+    random.seed(random_seed)
+
     model = AutoModelForCausalLM.from_pretrained(
         base_model, torch_dtype="auto", low_cpu_mem_usage=True
     ).cpu()
@@ -144,6 +160,7 @@ def quantize_save_llama(
     quant_devices=["cuda"],
     start_layer=0,
     stop_layer=int(sys.maxsize),
+    random_seed: int = 42,
 ):
     os.makedirs(f"{model_save_path}/layers", exist_ok=True)
     mp.set_start_method("spawn")
@@ -181,6 +198,7 @@ def quantize_save_llama(
                 data_params,
                 quant_params,
                 hessian_save_path,
+                random_seed,
             ),
         )
         p.start()
@@ -298,4 +316,5 @@ if __name__ == "__main__":
         quant_devices=args.devices,
         start_layer=args.start_layer,
         stop_layer=args.stop_layer,
+        random_seed=args.random_seed,
     )

@@ -3,9 +3,9 @@
 SCRIPT_FILLED_IN=0
 
 BASE_MODEL="meta-llama/Llama-2-7b-hf"
-CALDERA_MODEL_SAVE_PATH="PATH OF .pt FILE WITH MODEL"
+CALDERA_MODEL_SAVE_PATH="YOUR_MODEL_PATH"
 DEVICE="cuda:0"
-OUTPUT_FILENAME="YOUR FILE HERE"
+OUTPUT_FILENAME="YOUR FILENAME HERE"
 
 if [ $SCRIPT_FILLED_IN -eq 0 ]; then
     echo -e "This script is meant as a template for running scripts/eval_ppl.py. \

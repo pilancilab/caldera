@@ -4,17 +4,16 @@ SCRIPT_FILLED_IN=0
 
 # CALDERA PARAMETERS
 RANK=256
-FT_RANK=64
 LR_BITS=4
-CALDERA_ITERS=15
-LPLR_ITERS=10
+CALDERA_ITERS=20
+LPLR_ITERS=50
 # END CALDERA PARAMETERS
 
 BASE_MODEL="meta-llama/Llama-2-7b-hf"
 DEVICES="cuda:0 cuda:1 cuda:2 cuda:3"
 
-CALDERA_MODEL_SAVE_PATH="PATH OF .pt FILE TO SAVE QUANTIZED MODEL"
-HESSIAN_SAVE_DIR="DIRECTORY WITH HESSIANS"
+CALDERA_MODEL_SAVE_PATH="YOUR_MODEL_OUTPUT_FILENAME"
+HESSIAN_SAVE_DIR="~/.cache/huggingface/hub/models--relaxml--Hessians-Llama-2-7b-6144/snapshots/SNAPSHOT_ID_HERE"
 
 if [ $SCRIPT_FILLED_IN -eq 0 ]; then
     echo -e "This script is meant as a template for running scripts/quantize_save_llama.py. \
@@ -35,10 +34,11 @@ QUANT_PARAMS="--Q_bits 2 \
     --hadamard_transform true \
     --iters $CALDERA_ITERS \
     --lplr_iters $LPLR_ITERS \
-    --rand_svd true \
+    --rand_svd false \
     --update_order LR Q \
-    --Q_hessian_downdate false \
-    --ft_rank $FT_RANK"
+    --Q_hessian_downdate true \
+    --ft_rank 0 \
+    --random_seed 42"
 
 python scripts/quantize_save_llama.py \
     --hessian_save_path $HESSIAN_SAVE_DIR \
